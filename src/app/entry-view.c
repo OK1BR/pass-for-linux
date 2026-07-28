@@ -423,6 +423,18 @@ passfl_entry_view_show_entry (PassflEntryView *self, const char *name,
   gtk_stack_set_visible_child_name (self->stack, "entry");
 }
 
+PassflEntry *
+passfl_entry_view_steal_entry (PassflEntryView *self)
+{
+  PassflEntry *entry;
+
+  g_return_val_if_fail (PASSFL_IS_ENTRY_VIEW (self), NULL);
+
+  entry = g_steal_pointer (&self->entry);
+  passfl_entry_view_show_placeholder (self);
+  return entry;
+}
+
 void
 passfl_entry_view_set_toast_overlay (PassflEntryView *self,
                                      AdwToastOverlay *toasts)

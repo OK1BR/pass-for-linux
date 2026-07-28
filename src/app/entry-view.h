@@ -29,6 +29,10 @@ void passfl_entry_view_show_error (PassflEntryView *self, const char *name,
 void passfl_entry_view_show_entry (PassflEntryView *self, const char *name,
                                    PassflEntry *entry);
 
+/* Hand the shown entry over (for the editor); the view falls back to
+ * the placeholder. NULL when nothing is shown. */
+PassflEntry *passfl_entry_view_steal_entry (PassflEntryView *self);
+
 G_END_DECLS
 
 #endif /* PASSFL_ENTRY_VIEW_H */

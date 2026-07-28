@@ -14,11 +14,17 @@ Scope/design: `docs/SPEC.md` (written 2026-07-28 — **read it first**; it is a
 specification of `pass` behaviour derived from the script itself, with line
 references, plus the decided architecture and milestones).
 
-**Status: M1 done** — engine decrypts via GPGME into secure buffers
-(`crypto.c`, `entry.c`), read-only viewer UI works (`src/app/`: tree,
-type-ahead filter, entry view, copy with clear timer). Gates green via
-`meson test`; UI verified against a throwaway store + GNUPGHOME. Next:
-M2 (writes: insert, edit, generate, rm — conformance-tested against pass).
+**Status: M2 done** — writes work end to end: `crypto.c` encrypts with
+the §3 flags via GPGME + atomic replace, `generate.c` rejection-samples
+from getrandom, `store.c` write/delete with umask modes and `rmdir -p`
+pruning, §2.4 signed `.gpg-id` fully verified (settles SPEC §11.1).
+UI: editor (`entry-edit.c`), new/delete with confirms, §4.5 overwrite
+and §7.7 mtime guards, live sidebar via GFileMonitor. Conformance rig
+(`conformance_test.c`) compares engine vs real `pass` on identical
+stores — trees, modes, content, OpenPGP packets. 6/6 gates green.
+Note: PASSWORD_STORE_GPG_OPTS cannot pass through GPGME — writes refuse
+loudly when it is set. Next: M3 (libgit2 — commit per operation, §6
+messages, per-entry history).
 
 ## Four rules that override convenience
 

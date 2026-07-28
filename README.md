@@ -12,10 +12,11 @@ store — the same directory of GPG-encrypted files, read and written in place.
 `pass` on the command line and this app can be used on one store
 interchangeably; neither needs to know about the other.
 
-> **Status:** M1 — usable as a read-only viewer. The engine decrypts via
-> GPGME (pinentry stays gpg-agent's business) into secure memory; the UI
-> shows the store tree, entry metadata, TOTP lines masked, and copies the
-> password with a visible clear timer. No writes yet.
+> **Status:** M2 — reads and writes. Insert, edit, generate and delete work
+> from the UI: atomic replace, umask-correct modes, `--compress-algo=none`
+> and `--no-encrypt-to` semantics through GPGME, signed `.gpg-id`
+> verification (§2.4), all conformance-tested against `pass` 1.7.4 on
+> identical stores. The sidebar follows on-disk changes live. No git yet.
 > Read [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Why

@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "crypto.h"
+#include "entry-edit.h"
 #include "entry-view.h"
 #include "entry.h"
 #include "store.h"
@@ -86,7 +87,18 @@ struct _PassflWindow {
   AdwToastOverlay *toasts;     /* NULL after dispose — thread sentinel */
   AdwNavigationPage *content_page;
   PassflEntryView *entry_view;
+  PassflEntryEdit *entry_edit;
+  GtkStack *content_stack;     /* "view" | "edit" */
   AdwWindowTitle *title;
+  GtkWidget *btn_new, *btn_edit, *btn_delete, *btn_save, *btn_cancel;
+
+  char *current_rel;           /* entry shown in the view, or NULL */
+  gboolean editing;
+  PassflSecBuf *edit_orig;     /* content at edit start — §4.6 unchanged? */
+  gint64 edit_mtime;           /* on-disk mtime at edit start — §7.7 guard */
+  char *pending_name;          /* save waiting for a confirm dialog */
+  PassflSecBuf *pending_content;
+  PassflWatch *watch;
 
   guint search_debounce_id;
   guint decrypt_epoch;         /* bumped per selection and per dispose */
@@ -96,6 +108,10 @@ G_DEFINE_FINAL_TYPE (PassflWindow, passfl_window, ADW_TYPE_APPLICATION_WINDOW)
 
 static void rebuild_sidebar (PassflWindow *self);
 static void open_entry (PassflWindow *self, const char *rel);
+static void set_editing (PassflWindow *self, gboolean editing);
+static void toast (PassflWindow *self, const char *fmt, ...);
+static void do_write (PassflWindow *self, const char *name,
+                      const PassflSecBuf *content);
 
 /* --- decrypt flow ---------------------------------------------------------- */
 
@@ -134,6 +150,10 @@ decrypt_done (gpointer data)
                                 passfl_entry_parse (job->buf->data,
                                                     job->buf->len));
   adw_navigation_page_set_title (self->content_page, job->rel);
+  g_free (self->current_rel);
+  self->current_rel = g_strdup (job->rel);
+  gtk_widget_set_visible (self->btn_edit, TRUE);
+  gtk_widget_set_visible (self->btn_delete, TRUE);
 
 out:
   g_clear_pointer (&job->buf, passfl_secbuf_free);
@@ -193,8 +213,13 @@ on_selection_changed (PassflWindow *self, GParamSpec *pspec, gpointer sel)
   PassflItem *item = selected_item (GTK_SELECTION_MODEL (sel));
 
   (void) pspec;
-  if (item != NULL && !item->is_dir)
-    open_entry (self, item->rel);
+  if (self->editing) /* finish or cancel the edit first */
+    return;
+  if (item == NULL || item->is_dir)
+    return;
+  if (self->current_rel != NULL && strcmp (item->rel, self->current_rel) == 0)
+    return; /* already shown — e.g. focus reselecting after a rebuild */
+  open_entry (self, item->rel);
 }
 
 /* --- sidebar model ---------------------------------------------------------- */
@@ -411,7 +436,289 @@ rebuild_sidebar (PassflWindow *self)
       self->roots = build_items (self, tree);
       passfl_node_free (tree);
     }
+  if (self->watch != NULL) /* new directories need monitors too */
+    passfl_store_watch_rearm (self->watch);
   search_apply (self); /* re-shows tree or re-runs the active search */
+}
+
+/* --- edit flow (M2) ----------------------------------------------------------- */
+
+static void
+toast (PassflWindow *self, const char *fmt, ...)
+{
+  va_list ap;
+  char *msg;
+
+  if (self->toasts == NULL)
+    return;
+  va_start (ap, fmt);
+  msg = g_strdup_vprintf (fmt, ap);
+  va_end (ap);
+  adw_toast_overlay_add_toast (self->toasts, adw_toast_new (msg));
+  g_free (msg);
+}
+
+static void
+set_editing (PassflWindow *self, gboolean editing)
+{
+  self->editing = editing;
+  gtk_stack_set_visible_child_name (self->content_stack,
+                                    editing ? "edit" : "view");
+  gtk_widget_set_visible (self->btn_save, editing);
+  gtk_widget_set_visible (self->btn_cancel, editing);
+  gtk_widget_set_visible (self->btn_edit,
+                          !editing && self->current_rel != NULL);
+  gtk_widget_set_visible (self->btn_delete,
+                          !editing && self->current_rel != NULL);
+  gtk_widget_set_sensitive (self->btn_new, !editing);
+  if (!editing)
+    {
+      /* keep focus away from the just-rebuilt list, whose focus row
+       * would otherwise grab the selection (and the content pane) */
+      gtk_widget_grab_focus (self->search);
+      g_clear_pointer (&self->edit_orig, passfl_secbuf_free);
+      g_clear_pointer (&self->pending_name, g_free);
+      g_clear_pointer (&self->pending_content, passfl_secbuf_free);
+    }
+}
+
+static void
+act_new (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  PassflWindow *self = data;
+
+  (void) action;
+  (void) param;
+  if (self->editing)
+    return;
+  passfl_entry_edit_begin (self->entry_edit, NULL, NULL);
+  adw_navigation_page_set_title (self->content_page, "New entry");
+  self->edit_mtime = -1;
+  set_editing (self, TRUE);
+}
+
+static void
+act_edit (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  PassflWindow *self = data;
+  PassflEntry *entry;
+
+  (void) action;
+  (void) param;
+  if (self->editing || self->current_rel == NULL)
+    return;
+  entry = passfl_entry_view_steal_entry (self->entry_view);
+  if (entry == NULL)
+    return;
+  self->edit_mtime = passfl_store_entry_mtime (self->store_dir,
+                                               self->current_rel);
+  passfl_entry_edit_begin (self->entry_edit, self->current_rel, entry);
+  set_editing (self, TRUE);
+  /* snapshot for the §4.6 "Password unchanged." short-circuit */
+  self->edit_orig = passfl_entry_edit_content (self->entry_edit);
+}
+
+static void
+act_cancel (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  PassflWindow *self = data;
+  gboolean was_new;
+
+  (void) action;
+  (void) param;
+  if (!self->editing)
+    return;
+  was_new = passfl_entry_edit_is_new (self->entry_edit);
+  set_editing (self, FALSE);
+  if (!was_new && self->current_rel != NULL)
+    open_entry (self, self->current_rel); /* the view gave its entry away */
+  else
+    {
+      passfl_entry_view_show_placeholder (self->entry_view);
+      adw_navigation_page_set_title (self->content_page, "Entry");
+    }
+}
+
+static void
+do_write (PassflWindow *self, const char *name,
+          const PassflSecBuf *content)
+{
+  GError *error = NULL;
+  /* name may be self->pending_name, which set_editing frees — copy. */
+  g_autofree char *name_copy = g_strdup (name);
+
+  if (!passfl_store_write_entry (self->store_dir, name_copy, content->data,
+                                 content->len, &error))
+    {
+      toast (self, "%s", error->message);
+      g_error_free (error);
+      return; /* stay in the editor — nothing was lost */
+    }
+  set_editing (self, FALSE);
+  g_free (self->current_rel);
+  self->current_rel = g_strdup (name_copy);
+  rebuild_sidebar (self);
+  open_entry (self, name_copy);
+}
+
+static void
+on_confirm_save (AdwAlertDialog *dialog, GAsyncResult *result, gpointer data)
+{
+  PassflWindow *self = data;
+  const char *response = adw_alert_dialog_choose_finish (dialog, result);
+
+  if (self->toasts == NULL || !self->editing)
+    return;
+  if (strcmp (response, "overwrite") == 0 && self->pending_name != NULL)
+    do_write (self, self->pending_name, self->pending_content);
+  g_clear_pointer (&self->pending_name, g_free);
+  g_clear_pointer (&self->pending_content, passfl_secbuf_free);
+}
+
+static void
+confirm_save (PassflWindow *self, const char *heading, const char *body,
+              const char *name, PassflSecBuf *content /* takes */)
+{
+  AdwDialog *dlg = adw_alert_dialog_new (heading, NULL);
+
+  g_clear_pointer (&self->pending_name, g_free);
+  g_clear_pointer (&self->pending_content, passfl_secbuf_free);
+  self->pending_name = g_strdup (name);
+  self->pending_content = content;
+
+  adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg), "%s", body);
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg), "cancel",
+                                  "Cancel", "overwrite", "Overwrite", NULL);
+  adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg),
+                                            "overwrite",
+                                            ADW_RESPONSE_DESTRUCTIVE);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "cancel");
+  adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
+                           (GAsyncReadyCallback) on_confirm_save, self);
+}
+
+static void
+act_save (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  PassflWindow *self = data;
+  g_autofree char *name = NULL;
+  PassflSecBuf *content;
+  gboolean is_new;
+
+  (void) action;
+  (void) param;
+  if (!self->editing)
+    return;
+
+  is_new = passfl_entry_edit_is_new (self->entry_edit);
+  name = g_strdup (passfl_entry_edit_name (self->entry_edit));
+  g_strstrip (name);
+  if (*name == '\0')
+    {
+      toast (self, "The entry needs a name");
+      return;
+    }
+  if (!passfl_entry_name_is_safe (name) || name[0] == '/' ||
+      g_str_has_suffix (name, "/") || strstr (name, "//") != NULL)
+    {
+      toast (self, "Invalid entry name '%s'", name);
+      return;
+    }
+
+  content = passfl_entry_edit_content (self->entry_edit);
+
+  /* §4.6: byte-identical content means no write and no history churn. */
+  if (!is_new && self->edit_orig != NULL &&
+      content->len == self->edit_orig->len &&
+      memcmp (content->data, self->edit_orig->data, content->len) == 0)
+    {
+      passfl_secbuf_free (content);
+      toast (self, "Password unchanged.");
+      set_editing (self, FALSE);
+      open_entry (self, self->current_rel);
+      return;
+    }
+
+  if (is_new && passfl_store_entry_exists (self->store_dir, name))
+    {
+      g_autofree char *body = g_strdup_printf (
+          "An entry for %s already exists.", name);
+
+      confirm_save (self, "Overwrite entry?", body, name, content);
+      return; /* §4.5: prompt before overwrite */
+    }
+  if (!is_new &&
+      passfl_store_entry_mtime (self->store_dir, name) != self->edit_mtime)
+    {
+      g_autofree char *body = g_strdup_printf (
+          "%s changed on disk while you were editing — probably the CLI "
+          "or another machine via git. Overwrite that change?", name);
+
+      confirm_save (self, "Entry changed on disk", body, name, content);
+      return; /* §7.7: never overwrite a concurrent change blindly */
+    }
+
+  do_write (self, name, content);
+  passfl_secbuf_free (content);
+}
+
+static void
+on_confirm_delete (AdwAlertDialog *dialog, GAsyncResult *result,
+                   gpointer data)
+{
+  PassflWindow *self = data;
+  const char *response = adw_alert_dialog_choose_finish (dialog, result);
+  GError *error = NULL;
+
+  if (self->toasts == NULL || self->current_rel == NULL ||
+      strcmp (response, "delete") != 0)
+    return;
+  if (!passfl_store_delete_entry (self->store_dir, self->current_rel,
+                                  &error))
+    {
+      toast (self, "%s", error->message);
+      g_error_free (error);
+      return;
+    }
+  g_clear_pointer (&self->current_rel, g_free);
+  gtk_widget_set_visible (self->btn_edit, FALSE);
+  gtk_widget_set_visible (self->btn_delete, FALSE);
+  passfl_entry_view_show_placeholder (self->entry_view);
+  adw_navigation_page_set_title (self->content_page, "Entry");
+  rebuild_sidebar (self);
+}
+
+static void
+act_delete (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  PassflWindow *self = data;
+  AdwDialog *dlg;
+
+  (void) action;
+  (void) param;
+  if (self->editing || self->current_rel == NULL)
+    return;
+  dlg = adw_alert_dialog_new ("Delete entry?", NULL);
+  adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
+                                "Remove %s from the store? There is no "
+                                "undo until git history lands (M3).",
+                                self->current_rel);
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg), "cancel",
+                                  "Cancel", "delete", "Delete", NULL);
+  adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg),
+                                            "delete",
+                                            ADW_RESPONSE_DESTRUCTIVE);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "cancel");
+  adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
+                           (GAsyncReadyCallback) on_confirm_delete, self);
+}
+
+static void
+on_store_changed (gpointer data)
+{
+  PassflWindow *self = data;
+
+  rebuild_sidebar (self);
 }
 
 /* --- actions ----------------------------------------------------------------- */
@@ -451,6 +758,11 @@ act_about (GSimpleAction *action, GVariant *param, gpointer data)
 static const GActionEntry win_actions[] = {
   { .name = "refresh", .activate = act_refresh },
   { .name = "about", .activate = act_about },
+  { .name = "new", .activate = act_new },
+  { .name = "edit", .activate = act_edit },
+  { .name = "delete", .activate = act_delete },
+  { .name = "save", .activate = act_save },
+  { .name = "cancel", .activate = act_cancel },
 };
 
 static gboolean
@@ -461,11 +773,23 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
 
   (void) ctl;
   (void) keycode;
-  if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
-    return FALSE;
   if (adw_application_window_get_visible_dialog (
           ADW_APPLICATION_WINDOW (self)))
     return FALSE;
+  if (self->editing && (state & GDK_CONTROL_MASK) != 0 &&
+      keyval == GDK_KEY_s)
+    {
+      g_action_group_activate_action (G_ACTION_GROUP (self), "save", NULL);
+      return TRUE;
+    }
+  if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
+    return FALSE;
+  if (self->editing && keyval == GDK_KEY_Escape)
+    {
+      g_action_group_activate_action (G_ACTION_GROUP (self), "cancel",
+                                      NULL);
+      return TRUE;
+    }
   if (keyval == GDK_KEY_F5)
     {
       rebuild_sidebar (self);
@@ -489,6 +813,7 @@ build_sidebar (PassflWindow *self)
                                    GTK_WIDGET (self->title));
 
   GMenu *menu = g_menu_new ();
+  g_menu_append (menu, "_New entry", "win.new");
   g_menu_append (menu, "_Refresh", "win.refresh");
   g_menu_append (menu, "_About Pass for Linux", "win.about");
   GtkWidget *menu_btn = gtk_menu_button_new ();
@@ -498,6 +823,12 @@ build_sidebar (PassflWindow *self)
                                   G_MENU_MODEL (menu));
   g_object_unref (menu);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), menu_btn);
+
+  self->btn_new = gtk_button_new_from_icon_name ("list-add-symbolic");
+  gtk_widget_set_tooltip_text (self->btn_new, "New entry");
+  gtk_actionable_set_action_name (GTK_ACTIONABLE (self->btn_new),
+                                  "win.new");
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->btn_new);
 
   self->search = gtk_search_entry_new ();
   gtk_search_entry_set_placeholder_text (GTK_SEARCH_ENTRY (self->search),
@@ -526,9 +857,41 @@ build_content (PassflWindow *self)
   GtkWidget *header = adw_header_bar_new ();
 
   self->entry_view = PASSFL_ENTRY_VIEW (passfl_entry_view_new ());
+  self->entry_edit = PASSFL_ENTRY_EDIT (passfl_entry_edit_new ());
+  self->content_stack = GTK_STACK (gtk_stack_new ());
+  gtk_stack_add_named (self->content_stack, GTK_WIDGET (self->entry_view),
+                       "view");
+  gtk_stack_add_named (self->content_stack, GTK_WIDGET (self->entry_edit),
+                       "edit");
+
+  self->btn_edit = gtk_button_new_from_icon_name ("document-edit-symbolic");
+  gtk_widget_set_tooltip_text (self->btn_edit, "Edit");
+  gtk_actionable_set_action_name (GTK_ACTIONABLE (self->btn_edit),
+                                  "win.edit");
+  gtk_widget_set_visible (self->btn_edit, FALSE);
+  self->btn_delete = gtk_button_new_from_icon_name ("user-trash-symbolic");
+  gtk_widget_set_tooltip_text (self->btn_delete, "Delete");
+  gtk_actionable_set_action_name (GTK_ACTIONABLE (self->btn_delete),
+                                  "win.delete");
+  gtk_widget_set_visible (self->btn_delete, FALSE);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->btn_edit);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->btn_delete);
+
+  self->btn_cancel = gtk_button_new_with_label ("Cancel");
+  gtk_actionable_set_action_name (GTK_ACTIONABLE (self->btn_cancel),
+                                  "win.cancel");
+  gtk_widget_set_visible (self->btn_cancel, FALSE);
+  self->btn_save = gtk_button_new_with_label ("Save");
+  gtk_widget_add_css_class (self->btn_save, "suggested-action");
+  gtk_actionable_set_action_name (GTK_ACTIONABLE (self->btn_save),
+                                  "win.save");
+  gtk_widget_set_visible (self->btn_save, FALSE);
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->btn_save);
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->btn_cancel);
+
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), header);
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (tbv),
-                                GTK_WIDGET (self->entry_view));
+                                GTK_WIDGET (self->content_stack));
   return tbv;
 }
 
@@ -541,7 +904,13 @@ passfl_window_dispose (GObject *obj)
   self->decrypt_epoch++; /* in-flight decrypts drop their result */
   self->toasts = NULL;   /* sentinel for decrypt_done */
   self->entry_view = NULL;
+  self->entry_edit = NULL;
   self->tree_sel = NULL;
+  g_clear_pointer (&self->watch, passfl_store_watch_free);
+  g_clear_pointer (&self->current_rel, g_free);
+  g_clear_pointer (&self->edit_orig, passfl_secbuf_free);
+  g_clear_pointer (&self->pending_name, g_free);
+  g_clear_pointer (&self->pending_content, passfl_secbuf_free);
   g_clear_object (&self->roots);
   if (self->flat != NULL)
     g_clear_pointer (&self->flat, g_ptr_array_unref);
@@ -613,6 +982,9 @@ passfl_window_init (PassflWindow *self)
       g_clear_error (&error);
     }
   rebuild_sidebar (self);
+  /* §7.7: the CLI edits the same store — pick its changes up live. */
+  self->watch = passfl_store_watch_new (self->store_dir, on_store_changed,
+                                        self);
   gtk_widget_grab_focus (self->search);
 }
 

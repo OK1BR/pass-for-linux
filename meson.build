@@ -105,14 +105,18 @@ pass_conformance_test = executable('pass-conformance-test',
 test('conformance', pass_conformance_test, timeout : 120)
 
 # --- App --------------------------------------------------------------------
+m_dep = meson.get_compiler('c').find_library('m', required : false)
+
 executable('pass-for-linux',
   [
     'src/app/main.c',        # M1: AdwApplication bootstrap
     'src/app/window.c',      # M1: split view, store tree, decrypt flow
     'src/app/entry-view.c',  # M1: reveal, copy with the clear timer
+    'src/app/entry-edit.c',  # M2: structured editor, generator, strength
   ],
   include_directories : engine_inc,
-  dependencies : [glib_dep, gio_dep, gpgme_dep, gcrypt_dep, gtk_dep, adw_dep],
+  dependencies : [glib_dep, gio_dep, gpgme_dep, gcrypt_dep, gtk_dep, adw_dep,
+                  m_dep],
   link_with : engine_lib,
   install : true,
 )
