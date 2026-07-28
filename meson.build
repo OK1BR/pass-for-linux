@@ -33,6 +33,7 @@ engine_sources = [
   'src/engine/recipients.c',   # M0: .gpg-id resolution (SPEC §2.2)
   'src/engine/crypto.c',       # M1: GPGME decrypt, secure buffers (§3, §7)
   'src/engine/entry.c',        # M1: line-1 password + metadata (§2.3)
+  'src/engine/generate.c',     # M2: rejection sampling from getrandom (§4.8)
 ]
 engine_deps = [glib_dep, gio_dep, gpgme_dep, gcrypt_dep]
 
@@ -83,6 +84,25 @@ pass_crypto_test = executable('pass-crypto-test',
   link_with : engine_lib,
 )
 test('crypto', pass_crypto_test, timeout : 60)
+
+# M2: generation — tr-set expansion, lengths, alphabet membership.
+pass_generate_test = executable('pass-generate-test',
+  ['src/generate_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('generate', pass_generate_test, timeout : 30)
+
+# M2: the SPEC §1 rig — engine on store A, real pass on store B, compare
+# trees, modes, decrypted content and OpenPGP packet shapes.
+pass_conformance_test = executable('pass-conformance-test',
+  ['src/conformance_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('conformance', pass_conformance_test, timeout : 120)
 
 # --- App --------------------------------------------------------------------
 executable('pass-for-linux',

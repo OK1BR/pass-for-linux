@@ -21,6 +21,9 @@ GQuark passfl_store_error_quark (void);
 
 typedef enum {
   PASSFL_STORE_ERROR_SCAN,          /* store root missing or unreadable */
+  PASSFL_STORE_ERROR_SNEAKY_PATH,   /* ".." component (SPEC §2.5) */
+  PASSFL_STORE_ERROR_WRITE,         /* mkdir/unlink/rename failed */
+  PASSFL_STORE_ERROR_NOT_FOUND,     /* entry does not exist */
 } PassflStoreError;
 
 /* $PASSWORD_STORE_DIR, or ~/.password-store when unset/empty (SPEC §5).
@@ -58,6 +61,43 @@ void        passfl_node_free  (PassflNode *node);
 /* Flat list of entry names (char*), depth-first in tree order — the order
  * the sidebar shows. Caller frees the array (elements owned by it). */
 GPtrArray *passfl_store_list_entries (const char *root, GError **error);
+
+/* root/name.gpg after the §2.5 safety check. Caller frees. */
+char *passfl_store_entry_path (const char *root, const char *name,
+                               GError **error);
+
+gboolean passfl_store_entry_exists (const char *root, const char *name);
+
+/* Modification time (µs since the epoch) of an entry file, -1 when it
+ * does not exist — the §7.7 guard against overwriting a concurrent
+ * change blindly. */
+gint64 passfl_store_entry_mtime (const char *root, const char *name);
+
+/* Write one entry (SPEC §4.5/§4.6): resolve recipients for its directory
+ * (§2.2, with the §2.4 signature check), create missing parents with
+ * 0777 & ~PASSWORD_STORE_UMASK, encrypt and atomically replace the file.
+ * The store must be initialised — no .gpg-id is a hard error. */
+gboolean passfl_store_write_entry (const char *root, const char *name,
+                                   const char *data, gsize len,
+                                   GError **error);
+
+/* Delete one entry and prune now-empty parent directories up to the
+ * store root (`rmdir -p`, line 593 — we stop at the root; pass would
+ * walk past it, which only differs on a store with nothing in it). */
+gboolean passfl_store_delete_entry (const char *root, const char *name,
+                                    GError **error);
+
+/* On-disk change notification: one callback (in the GLib main context
+ * that created the watch) whenever anything under root changes, events
+ * coalesced. Re-created by rearm after a rescan picks up new
+ * directories. Free stops watching. */
+typedef struct _PassflWatch PassflWatch;
+typedef void (*PassflWatchFunc) (gpointer user_data);
+
+PassflWatch *passfl_store_watch_new (const char *root, PassflWatchFunc cb,
+                                     gpointer user_data);
+void         passfl_store_watch_rearm (PassflWatch *watch);
+void         passfl_store_watch_free (PassflWatch *watch);
 
 G_END_DECLS
 

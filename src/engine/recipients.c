@@ -3,6 +3,7 @@
  * Part of pass-for-linux. GPL-3.0-or-later.
  */
 #include "recipients.h"
+#include "crypto.h"
 #include "store.h"
 
 #include <string.h>
@@ -98,6 +99,11 @@ passfl_recipients_resolve (const char *root, const char *dir_rel,
           g_autofree char *content = NULL;
           GError *read_error = NULL;
 
+          /* §2.4: with PASSWORD_STORE_SIGNING_KEY set the file must
+           * carry a valid signature — pass verifies exactly here
+           * (verify_file at line 99), and so do we. */
+          if (!passfl_crypto_verify_gpg_id (candidate, error))
+            return NULL;
           if (!g_file_get_contents (candidate, &content, NULL, &read_error))
             {
               g_set_error (error, PASSFL_RECIPIENTS_ERROR,
