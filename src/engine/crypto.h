@@ -44,6 +44,8 @@ PassflSecBuf *passfl_secbuf_new_sized (gsize len);
 /* Wipe and release. NULL-safe. */
 void passfl_secbuf_free (PassflSecBuf *buf);
 
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (PassflSecBuf, passfl_secbuf_free)
+
 /* One-time initialisation of GPGME and the libgcrypt secure-memory pool.
  * Idempotent; every other function here calls it as needed. */
 gboolean passfl_crypto_init (GError **error);

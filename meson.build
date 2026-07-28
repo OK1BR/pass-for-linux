@@ -35,6 +35,7 @@ engine_sources = [
   'src/engine/entry.c',        # M1: line-1 password + metadata (§2.3)
   'src/engine/generate.c',     # M2: rejection sampling from getrandom (§4.8)
   'src/engine/vcs.c',          # M3: libgit2, commit messages per §6
+  'src/engine/otp.c',          # M5: otpauth:// parse, HMAC codes (§2.3)
 ]
 engine_deps = [glib_dep, gio_dep, gpgme_dep, gcrypt_dep, git2_dep]
 
@@ -124,6 +125,16 @@ pass_m4_test = executable('pass-m4-test',
   link_with : engine_lib,
 )
 test('m4', pass_m4_test, timeout : 120)
+
+# M5: OTP — RFC 4226/6238 vectors, URI parse matrix, and live codes vs
+# the real `pass otp` on the same entry.
+pass_otp_test = executable('pass-otp-test',
+  ['src/otp_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('otp', pass_otp_test, timeout : 120)
 
 # --- App --------------------------------------------------------------------
 m_dep = meson.get_compiler('c').find_library('m', required : false)
