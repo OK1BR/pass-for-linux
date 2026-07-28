@@ -124,10 +124,11 @@ executable('pass-for-linux',
     'src/app/window.c',      # M1: split view, store tree, decrypt flow
     'src/app/entry-view.c',  # M1: reveal, copy with the clear timer
     'src/app/entry-edit.c',  # M2: structured editor, generator, strength
+    'src/app/history.c',     # M3: per-entry history, plaintext diff, restore
   ],
   include_directories : engine_inc,
   dependencies : [glib_dep, gio_dep, gpgme_dep, gcrypt_dep, gtk_dep, adw_dep,
-                  m_dep],
+                  git2_dep, m_dep],
   link_with : engine_lib,
   install : true,
 )

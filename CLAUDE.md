@@ -14,17 +14,16 @@ Scope/design: `docs/SPEC.md` (written 2026-07-28 — **read it first**; it is a
 specification of `pass` behaviour derived from the script itself, with line
 references, plus the decided architecture and milestones).
 
-**Status: M2 done** — writes work end to end: `crypto.c` encrypts with
-the §3 flags via GPGME + atomic replace, `generate.c` rejection-samples
-from getrandom, `store.c` write/delete with umask modes and `rmdir -p`
-pruning, §2.4 signed `.gpg-id` fully verified (settles SPEC §11.1).
-UI: editor (`entry-edit.c`), new/delete with confirms, §4.5 overwrite
-and §7.7 mtime guards, live sidebar via GFileMonitor. Conformance rig
-(`conformance_test.c`) compares engine vs real `pass` on identical
-stores — trees, modes, content, OpenPGP packets. 6/6 gates green.
-Note: PASSWORD_STORE_GPG_OPTS cannot pass through GPGME — writes refuse
-loudly when it is set. Next: M3 (libgit2 — commit per operation, §6
-messages, per-entry history).
+**Status: M3 done** — git via libgit2 (`vcs.c`): repo discovery with
+ceiling (§6), one commit per operation only when something changed,
+§6-exact messages (edit says "Pass for Linux" — the §11.3 deviation),
+pass.signcommits/commit.gpgsign signing through GPGME verified by real
+`git verify-commit`; per-entry history + revision reads. UI: history
+dialog with native plaintext line diffs and restore (`history.c`).
+Everything M2 still holds (conformance rig, §2.4, §4.5/§4.6/§7.7
+guards, live sidebar). 7/7 gates green. PASSWORD_STORE_GPG_OPTS still
+refused on writes (cannot pass through GPGME). Next: M4 (mv/cp with
+re-encryption, init, recipient view + "needs re-encryption" warning).
 
 ## Four rules that override convenience
 

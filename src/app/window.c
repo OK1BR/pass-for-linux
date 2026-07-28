@@ -18,7 +18,9 @@
 #include "entry-edit.h"
 #include "entry-view.h"
 #include "entry.h"
+#include "history.h"
 #include "store.h"
+#include "vcs.h"
 
 #define SEARCH_DEBOUNCE_MS 250
 
@@ -91,6 +93,7 @@ struct _PassflWindow {
   GtkStack *content_stack;     /* "view" | "edit" */
   AdwWindowTitle *title;
   GtkWidget *btn_new, *btn_edit, *btn_delete, *btn_save, *btn_cancel;
+  GtkWidget *btn_history;
 
   char *current_rel;           /* entry shown in the view, or NULL */
   gboolean editing;
@@ -98,6 +101,7 @@ struct _PassflWindow {
   gint64 edit_mtime;           /* on-disk mtime at edit start — §7.7 guard */
   char *pending_name;          /* save waiting for a confirm dialog */
   PassflSecBuf *pending_content;
+  char *pending_message;       /* §6 commit message for the pending save */
   PassflWatch *watch;
 
   guint search_debounce_id;
@@ -111,7 +115,7 @@ static void open_entry (PassflWindow *self, const char *rel);
 static void set_editing (PassflWindow *self, gboolean editing);
 static void toast (PassflWindow *self, const char *fmt, ...);
 static void do_write (PassflWindow *self, const char *name,
-                      const PassflSecBuf *content);
+                      const PassflSecBuf *content, const char *message);
 
 /* --- decrypt flow ---------------------------------------------------------- */
 
@@ -154,6 +158,7 @@ decrypt_done (gpointer data)
   self->current_rel = g_strdup (job->rel);
   gtk_widget_set_visible (self->btn_edit, TRUE);
   gtk_widget_set_visible (self->btn_delete, TRUE);
+  gtk_widget_set_visible (self->btn_history, TRUE);
 
 out:
   g_clear_pointer (&job->buf, passfl_secbuf_free);
@@ -470,6 +475,8 @@ set_editing (PassflWindow *self, gboolean editing)
                           !editing && self->current_rel != NULL);
   gtk_widget_set_visible (self->btn_delete,
                           !editing && self->current_rel != NULL);
+  gtk_widget_set_visible (self->btn_history,
+                          !editing && self->current_rel != NULL);
   gtk_widget_set_sensitive (self->btn_new, !editing);
   if (!editing)
     {
@@ -479,6 +486,7 @@ set_editing (PassflWindow *self, gboolean editing)
       g_clear_pointer (&self->edit_orig, passfl_secbuf_free);
       g_clear_pointer (&self->pending_name, g_free);
       g_clear_pointer (&self->pending_content, passfl_secbuf_free);
+      g_clear_pointer (&self->pending_message, g_free);
     }
 }
 
@@ -539,9 +547,36 @@ act_cancel (GSimpleAction *action, GVariant *param, gpointer data)
     }
 }
 
+/* One commit per operation (§6); a store without git is a no-op. A
+ * failed commit is reported but the write stands, like in pass. */
+static void
+vcs_commit (PassflWindow *self, const char *name, const char *message)
+{
+  GError *error = NULL;
+  g_autofree char *path =
+      g_strconcat (self->store_dir, "/", name, ".gpg", NULL);
+  PassflVcs *vcs = passfl_vcs_open (self->store_dir, path, &error);
+
+  if (vcs == NULL)
+    {
+      if (error != NULL)
+        {
+          toast (self, "%s", error->message);
+          g_error_free (error);
+        }
+      return;
+    }
+  if (!passfl_vcs_commit_file (vcs, path, message, &error))
+    {
+      toast (self, "Saved, but git commit failed: %s", error->message);
+      g_error_free (error);
+    }
+  passfl_vcs_free (vcs);
+}
+
 static void
 do_write (PassflWindow *self, const char *name,
-          const PassflSecBuf *content)
+          const PassflSecBuf *content, const char *message)
 {
   GError *error = NULL;
   /* name may be self->pending_name, which set_editing frees — copy. */
@@ -554,6 +589,7 @@ do_write (PassflWindow *self, const char *name,
       g_error_free (error);
       return; /* stay in the editor — nothing was lost */
     }
+  vcs_commit (self, name_copy, message);
   set_editing (self, FALSE);
   g_free (self->current_rel);
   self->current_rel = g_strdup (name_copy);
@@ -570,21 +606,26 @@ on_confirm_save (AdwAlertDialog *dialog, GAsyncResult *result, gpointer data)
   if (self->toasts == NULL || !self->editing)
     return;
   if (strcmp (response, "overwrite") == 0 && self->pending_name != NULL)
-    do_write (self, self->pending_name, self->pending_content);
+    do_write (self, self->pending_name, self->pending_content,
+              self->pending_message);
   g_clear_pointer (&self->pending_name, g_free);
   g_clear_pointer (&self->pending_content, passfl_secbuf_free);
+  g_clear_pointer (&self->pending_message, g_free);
 }
 
 static void
 confirm_save (PassflWindow *self, const char *heading, const char *body,
-              const char *name, PassflSecBuf *content /* takes */)
+              const char *name, PassflSecBuf *content /* takes */,
+              const char *message)
 {
   AdwDialog *dlg = adw_alert_dialog_new (heading, NULL);
 
   g_clear_pointer (&self->pending_name, g_free);
   g_clear_pointer (&self->pending_content, passfl_secbuf_free);
+  g_clear_pointer (&self->pending_message, g_free);
   self->pending_name = g_strdup (name);
   self->pending_content = content;
+  self->pending_message = g_strdup (message);
 
   adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg), "%s", body);
   adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg), "cancel",
@@ -624,6 +665,8 @@ act_save (GSimpleAction *action, GVariant *param, gpointer data)
       toast (self, "Invalid entry name '%s'", name);
       return;
     }
+  g_autofree char *message = is_new ? passfl_vcs_msg_insert (name)
+                                    : passfl_vcs_msg_edit (name, TRUE);
 
   content = passfl_entry_edit_content (self->entry_edit);
 
@@ -644,7 +687,8 @@ act_save (GSimpleAction *action, GVariant *param, gpointer data)
       g_autofree char *body = g_strdup_printf (
           "An entry for %s already exists.", name);
 
-      confirm_save (self, "Overwrite entry?", body, name, content);
+      confirm_save (self, "Overwrite entry?", body, name, content,
+                    message);
       return; /* §4.5: prompt before overwrite */
     }
   if (!is_new &&
@@ -654,11 +698,12 @@ act_save (GSimpleAction *action, GVariant *param, gpointer data)
           "%s changed on disk while you were editing — probably the CLI "
           "or another machine via git. Overwrite that change?", name);
 
-      confirm_save (self, "Entry changed on disk", body, name, content);
+      confirm_save (self, "Entry changed on disk", body, name, content,
+                    message);
       return; /* §7.7: never overwrite a concurrent change blindly */
     }
 
-  do_write (self, name, content);
+  do_write (self, name, content, message);
   passfl_secbuf_free (content);
 }
 
@@ -673,16 +718,38 @@ on_confirm_delete (AdwAlertDialog *dialog, GAsyncResult *result,
   if (self->toasts == NULL || self->current_rel == NULL ||
       strcmp (response, "delete") != 0)
     return;
-  if (!passfl_store_delete_entry (self->store_dir, self->current_rel,
-                                  &error))
-    {
-      toast (self, "%s", error->message);
-      g_error_free (error);
-      return;
-    }
+  {
+    g_autofree char *path = g_strconcat (self->store_dir, "/",
+                                         self->current_rel, ".gpg", NULL);
+    g_autofree char *message = passfl_vcs_msg_remove (self->current_rel);
+    /* discover before the file and its pruned parents disappear */
+    PassflVcs *vcs = passfl_vcs_open (self->store_dir, path, NULL);
+
+    if (!passfl_store_delete_entry (self->store_dir, self->current_rel,
+                                    &error))
+      {
+        toast (self, "%s", error->message);
+        g_error_free (error);
+        passfl_vcs_free (vcs);
+        return;
+      }
+    if (vcs != NULL)
+      {
+        GError *git_error = NULL;
+
+        if (!passfl_vcs_commit_file (vcs, path, message, &git_error))
+          {
+            toast (self, "Removed, but git commit failed: %s",
+                   git_error->message);
+            g_error_free (git_error);
+          }
+        passfl_vcs_free (vcs);
+      }
+  }
   g_clear_pointer (&self->current_rel, g_free);
   gtk_widget_set_visible (self->btn_edit, FALSE);
   gtk_widget_set_visible (self->btn_delete, FALSE);
+  gtk_widget_set_visible (self->btn_history, FALSE);
   passfl_entry_view_show_placeholder (self->entry_view);
   adw_navigation_page_set_title (self->content_page, "Entry");
   rebuild_sidebar (self);
@@ -711,6 +778,44 @@ act_delete (GSimpleAction *action, GVariant *param, gpointer data)
   adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "cancel");
   adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
                            (GAsyncReadyCallback) on_confirm_delete, self);
+}
+
+static void
+on_history_restore (const char *rel, PassflSecBuf *content, gpointer data)
+{
+  PassflWindow *self = data;
+  g_autofree char *message = passfl_vcs_msg_edit (rel, TRUE);
+  GError *error = NULL;
+
+  if (!passfl_store_write_entry (self->store_dir, rel, content->data,
+                                 content->len, &error))
+    {
+      toast (self, "%s", error->message);
+      g_error_free (error);
+    }
+  else
+    {
+      vcs_commit (self, rel, message);
+      toast (self, "Restored %s", rel);
+      rebuild_sidebar (self);
+      open_entry (self, rel);
+    }
+  passfl_secbuf_free (content);
+}
+
+static void
+act_history (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  PassflWindow *self = data;
+  AdwDialog *dlg;
+
+  (void) action;
+  (void) param;
+  if (self->editing || self->current_rel == NULL)
+    return;
+  dlg = passfl_history_new (self->store_dir, self->current_rel,
+                            on_history_restore, self);
+  adw_dialog_present (dlg, GTK_WIDGET (self));
 }
 
 static void
@@ -763,6 +868,7 @@ static const GActionEntry win_actions[] = {
   { .name = "delete", .activate = act_delete },
   { .name = "save", .activate = act_save },
   { .name = "cancel", .activate = act_cancel },
+  { .name = "history", .activate = act_history },
 };
 
 static gboolean
@@ -874,8 +980,15 @@ build_content (PassflWindow *self)
   gtk_actionable_set_action_name (GTK_ACTIONABLE (self->btn_delete),
                                   "win.delete");
   gtk_widget_set_visible (self->btn_delete, FALSE);
+  self->btn_history =
+      gtk_button_new_from_icon_name ("document-open-recent-symbolic");
+  gtk_widget_set_tooltip_text (self->btn_history, "History");
+  gtk_actionable_set_action_name (GTK_ACTIONABLE (self->btn_history),
+                                  "win.history");
+  gtk_widget_set_visible (self->btn_history, FALSE);
   adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->btn_edit);
   adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->btn_delete);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->btn_history);
 
   self->btn_cancel = gtk_button_new_with_label ("Cancel");
   gtk_actionable_set_action_name (GTK_ACTIONABLE (self->btn_cancel),
@@ -911,6 +1024,7 @@ passfl_window_dispose (GObject *obj)
   g_clear_pointer (&self->edit_orig, passfl_secbuf_free);
   g_clear_pointer (&self->pending_name, g_free);
   g_clear_pointer (&self->pending_content, passfl_secbuf_free);
+  g_clear_pointer (&self->pending_message, g_free);
   g_clear_object (&self->roots);
   if (self->flat != NULL)
     g_clear_pointer (&self->flat, g_ptr_array_unref);
