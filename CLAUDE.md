@@ -14,9 +14,11 @@ Scope/design: `docs/SPEC.md` (written 2026-07-28 — **read it first**; it is a
 specification of `pass` behaviour derived from the script itself, with line
 references, plus the decided architecture and milestones).
 
-**Status: M0 done** — engine reads a store (`store.c` scan, `recipients.c`
-`.gpg-id` resolution), gates green via `meson test`. Next: M1 (GPGME decrypt
-with agent pinentry, read-only UI).
+**Status: M1 done** — engine decrypts via GPGME into secure buffers
+(`crypto.c`, `entry.c`), read-only viewer UI works (`src/app/`: tree,
+type-ahead filter, entry view, copy with clear timer). Gates green via
+`meson test`; UI verified against a throwaway store + GNUPGHOME. Next:
+M2 (writes: insert, edit, generate, rm — conformance-tested against pass).
 
 ## Four rules that override convenience
 

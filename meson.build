@@ -83,3 +83,16 @@ pass_crypto_test = executable('pass-crypto-test',
   link_with : engine_lib,
 )
 test('crypto', pass_crypto_test, timeout : 60)
+
+# --- App --------------------------------------------------------------------
+executable('pass-for-linux',
+  [
+    'src/app/main.c',        # M1: AdwApplication bootstrap
+    'src/app/window.c',      # M1: split view, store tree, decrypt flow
+    'src/app/entry-view.c',  # M1: reveal, copy with the clear timer
+  ],
+  include_directories : engine_inc,
+  dependencies : [glib_dep, gio_dep, gpgme_dep, gcrypt_dep, gtk_dep, adw_dep],
+  link_with : engine_lib,
+  install : true,
+)
