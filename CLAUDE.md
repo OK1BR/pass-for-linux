@@ -14,15 +14,14 @@ Scope/design: `docs/SPEC.md` (written 2026-07-28 — **read it first**; it is a
 specification of `pass` behaviour derived from the script itself, with line
 references, plus the decided architecture and milestones).
 
-**Status: M5 done** — `otp.c` parses otpauth:// like pass-otp's
-otp_parse_uri, computes codes natively (base32 + libgcrypt HMAC with
-GCRY_MD_FLAG_SECURE; RFC 4226/6238 vector-verified; live conformance
-vs `pass otp`), UI shows live TOTP with a countdown ring and timed
-copy; HOTP generates at counter+1, rewrites the entry and commits
-"Increment HOTP counter for <path>." exactly like pass-otp. All
-earlier milestones hold; 9/9 gates green. PASSWORD_STORE_GPG_OPTS
-still refused on writes. Next: M6 — packaging (PKGBUILD, appstream
-metainfo, icon, .desktop, conformance suite in CI).
+Handover notes: `docs/STATUS.md` — where the project stands, what is
+deliberately not built, and how the UI gets verified. **Read it when
+picking the work back up.**
+
+**Status (2026-07-28): M0–M5 done, 9/9 gates green, all pushed.**
+M6 (packaging) is postponed at Richard's explicit request — the app is
+in manual testing over his real store instead. Do not start M6 unless
+he asks.
 
 ## Four rules that override convenience
 
