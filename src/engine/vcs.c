@@ -178,6 +178,7 @@ commit_tree (PassflVcs *vcs, git_tree *tree, const char *message,
     {
       git_buf raw = { 0 };
       g_autofree char *signer = NULL;
+      g_autoptr (GBytes) sig_bytes = NULL;
       g_autofree char *signature = NULL;
       g_autofree char *branch = NULL;
       const char *signingkey = NULL;
@@ -197,13 +198,15 @@ commit_tree (PassflVcs *vcs, git_tree *tree, const char *message,
           set_git_error (error, "build commit");
           goto out;
         }
-      signature = passfl_crypto_sign_detached (raw.ptr, raw.size, signer,
-                                               error);
-      if (signature == NULL)
+      sig_bytes = passfl_crypto_sign_detached (raw.ptr, raw.size, signer,
+                                               TRUE, error);
+      if (sig_bytes == NULL)
         {
           git_buf_dispose (&raw);
           goto out;
         }
+      signature = g_strndup (g_bytes_get_data (sig_bytes, NULL),
+                             g_bytes_get_size (sig_bytes));
       if (git_commit_create_with_signature (&commit_oid, vcs->repo,
                                             raw.ptr, signature, NULL) != 0)
         {
@@ -484,4 +487,155 @@ char *
 passfl_vcs_msg_remove (const char *name)
 {
   return g_strdup_printf ("Remove %s from store.", name);
+}
+
+/* --- multi-path commits (M4) ----------------------------------------------- */
+
+const char *
+passfl_vcs_workdir (PassflVcs *vcs)
+{
+  g_return_val_if_fail (vcs != NULL, NULL);
+  return vcs->workdir;
+}
+
+gboolean
+passfl_vcs_commit_paths (PassflVcs *vcs, const char *const *paths,
+                         const char *message, GError **error)
+{
+  git_index *index = NULL;
+  git_tree *tree = NULL;
+  git_oid tree_oid, head_oid;
+  gboolean ok = FALSE;
+
+  g_return_val_if_fail (vcs != NULL, FALSE);
+  g_return_val_if_fail (paths != NULL, FALSE);
+  g_return_val_if_fail (message != NULL, FALSE);
+
+  if (git_repository_index (&index, vcs->repo) != 0)
+    {
+      set_git_error (error, "open index");
+      return FALSE;
+    }
+
+  for (guint i = 0; paths[i] != NULL; i++)
+    {
+      g_autofree char *rel = rel_path (vcs, paths[i]);
+
+      if (rel == NULL)
+        continue; /* outside this repository — pass ignores it too */
+      if (*rel == '\0' || g_file_test (paths[i], G_FILE_TEST_IS_DIR))
+        {
+          char *specs[1] = { rel };
+          git_strarray pathspec = { specs, *rel == '\0' ? 0 : 1 };
+
+          if (git_index_add_all (index, &pathspec, 0, NULL, NULL) != 0 ||
+              git_index_update_all (index, &pathspec, NULL, NULL) != 0)
+            {
+              set_git_error (error, "stage tree");
+              goto out;
+            }
+        }
+      else if (g_file_test (paths[i], G_FILE_TEST_EXISTS))
+        {
+          if (git_index_add_bypath (index, rel) != 0)
+            {
+              set_git_error (error, "stage file");
+              goto out;
+            }
+        }
+      else
+        git_index_remove_bypath (index, rel); /* may be untracked — fine */
+    }
+  if (git_index_write (index) != 0 ||
+      git_index_write_tree (&tree_oid, index) != 0)
+    {
+      set_git_error (error, "write index");
+      goto out;
+    }
+
+  /* only-if-changed guard: same tree as HEAD means nothing to commit */
+  if (git_reference_name_to_id (&head_oid, vcs->repo, "HEAD") == 0)
+    {
+      git_commit *head = NULL;
+      gboolean same = FALSE;
+
+      if (git_commit_lookup (&head, vcs->repo, &head_oid) == 0)
+        {
+          same = git_oid_equal (git_commit_tree_id (head), &tree_oid);
+          git_commit_free (head);
+        }
+      if (same)
+        {
+          ok = TRUE;
+          goto out;
+        }
+    }
+
+  if (git_tree_lookup (&tree, vcs->repo, &tree_oid) != 0)
+    {
+      set_git_error (error, "write tree");
+      goto out;
+    }
+  ok = commit_tree (vcs, tree, message, error);
+
+out:
+  if (tree != NULL)
+    git_tree_free (tree);
+  git_index_free (index);
+  return ok;
+}
+
+/* --- M4 message builders ---------------------------------------------------- */
+
+char *
+passfl_vcs_msg_rename (const char *old_arg, const char *new_arg)
+{
+  return g_strdup_printf ("Rename %s to %s.", old_arg, new_arg);
+}
+
+char *
+passfl_vcs_msg_copy (const char *old_arg, const char *new_arg)
+{
+  return g_strdup_printf ("Copy %s to %s.", old_arg, new_arg);
+}
+
+/* ${id_path:+ ($id_path)} */
+static char *
+subpath_tag (const char *subpath)
+{
+  if (subpath == NULL || *subpath == '\0')
+    return g_strdup ("");
+  return g_strdup_printf (" (%s)", subpath);
+}
+
+char *
+passfl_vcs_msg_set_gpg_id (const char *ids_joined, const char *subpath)
+{
+  g_autofree char *tag = subpath_tag (subpath);
+
+  return g_strdup_printf ("Set GPG id to %s%s.", ids_joined, tag);
+}
+
+char *
+passfl_vcs_msg_deinit (const char *gpg_id_abs, const char *subpath)
+{
+  g_autofree char *tag = subpath_tag (subpath);
+
+  /* pass puts the absolute .gpg-id path here (line 342) */
+  return g_strdup_printf ("Deinitialize %s%s.", gpg_id_abs, tag);
+}
+
+char *
+passfl_vcs_msg_reencrypt (const char *ids_joined, const char *subpath)
+{
+  g_autofree char *tag = subpath_tag (subpath);
+
+  return g_strdup_printf ("Reencrypt password store using new GPG id %s%s.",
+                          ids_joined, tag);
+}
+
+char *
+passfl_vcs_msg_sign_gpg_id (const char *fprs_joined)
+{
+  return g_strdup_printf ("Signing new GPG id with %s.", fprs_joined);
 }

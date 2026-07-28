@@ -132,3 +132,87 @@ passfl_recipients_resolve (const char *root, const char *dir_rel,
                "you must run: pass init your-gpg-id", root_norm);
   return NULL;
 }
+
+/* --- gpg groups (M4, §4.9) ------------------------------------------------- */
+
+/* group definitions from gpg.conf: name → GPtrArray of member strings.
+ * gpg reads them from its config file; so do we — the file gpg itself
+ * would use: $GNUPGHOME/gpg.conf or ~/.gnupg/gpg.conf. */
+static GHashTable *
+load_groups (void)
+{
+  GHashTable *groups =
+      g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
+                             (GDestroyNotify) g_ptr_array_unref);
+  const char *home = g_getenv ("GNUPGHOME");
+  g_autofree char *conf_path = home != NULL && *home != '\0'
+      ? g_build_filename (home, "gpg.conf", NULL)
+      : g_build_filename (g_get_home_dir (), ".gnupg", "gpg.conf", NULL);
+  g_autofree char *content = NULL;
+  g_auto (GStrv) lines = NULL;
+
+  if (!g_file_get_contents (conf_path, &content, NULL, NULL))
+    return groups;
+
+  lines = g_strsplit (content, "\n", -1);
+  for (guint i = 0; lines[i] != NULL; i++)
+    {
+      char *line = lines[i];
+      char *hash = strchr (line, '#');
+      char *eq;
+      g_autofree char *name = NULL;
+      g_auto (GStrv) members = NULL;
+      GPtrArray *list;
+
+      if (hash != NULL)
+        *hash = '\0';
+      g_strstrip (line);
+      if (!g_str_has_prefix (line, "group") ||
+          !g_ascii_isspace (line[5]))
+        continue;
+      eq = strchr (line + 6, '=');
+      if (eq == NULL)
+        continue;
+      name = g_strndup (line + 6, (gsize) (eq - line - 6));
+      g_strstrip (name);
+      if (*name == '\0')
+        continue;
+
+      list = g_hash_table_lookup (groups, name);
+      if (list == NULL)
+        {
+          list = g_ptr_array_new_with_free_func (g_free);
+          g_hash_table_insert (groups, g_strdup (name), list);
+        }
+      members = g_strsplit_set (eq + 1, " \t,", -1);
+      for (guint m = 0; members[m] != NULL; m++)
+        if (*members[m] != '\0')
+          g_ptr_array_add (list, g_strdup (members[m]));
+    }
+  return groups;
+}
+
+GStrv
+passfl_recipients_expand_groups (const char *const *recipients)
+{
+  g_autoptr (GHashTable) groups = NULL;
+  g_autoptr (GStrvBuilder) builder = g_strv_builder_new ();
+
+  g_return_val_if_fail (recipients != NULL, NULL);
+
+  groups = load_groups ();
+  for (guint i = 0; recipients[i] != NULL; i++)
+    {
+      GPtrArray *members =
+          g_hash_table_lookup (groups, recipients[i]);
+
+      if (members == NULL)
+        {
+          g_strv_builder_add (builder, recipients[i]);
+          continue;
+        }
+      for (guint m = 0; m < members->len; m++)
+        g_strv_builder_add (builder, g_ptr_array_index (members, m));
+    }
+  return g_strv_builder_end (builder);
+}

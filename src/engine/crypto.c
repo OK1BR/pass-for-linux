@@ -209,16 +209,17 @@ passfl_crypto_decrypt_mem (const char *data, gsize len, GError **error)
   return decrypt_data (cipher, "git blob", error);
 }
 
-char *
+GBytes *
 passfl_crypto_sign_detached (const char *data, gsize len,
-                             const char *signer, GError **error)
+                             const char *signer, gboolean armor,
+                             GError **error)
 {
   gpgme_ctx_t ctx = NULL;
   gpgme_data_t in = NULL;
   gpgme_data_t out = NULL;
   gpgme_error_t err;
   char *mem = NULL;
-  char *sig = NULL;
+  GBytes *sig = NULL;
   size_t sig_len;
 
   g_return_val_if_fail (data != NULL, NULL);
@@ -230,7 +231,7 @@ passfl_crypto_sign_detached (const char *data, gsize len,
   if (err == GPG_ERR_NO_ERROR)
     err = gpgme_set_protocol (ctx, GPGME_PROTOCOL_OpenPGP);
   if (err == GPG_ERR_NO_ERROR)
-    gpgme_set_armor (ctx, 1);
+    gpgme_set_armor (ctx, armor ? 1 : 0);
   if (err == GPG_ERR_NO_ERROR && signer != NULL && *signer != '\0')
     {
       gpgme_key_t key = NULL;
@@ -260,7 +261,7 @@ passfl_crypto_sign_detached (const char *data, gsize len,
   out = NULL;
   if (mem != NULL)
     {
-      sig = g_strndup (mem, sig_len);
+      sig = g_bytes_new (mem, sig_len);
       gpgme_free (mem);
     }
 
@@ -572,4 +573,250 @@ out:
   if (ctx != NULL)
     gpgme_release (ctx);
   return found;
+}
+
+/* --- re-encryption support (M4, §4.10) ------------------------------------ */
+
+GStrv
+passfl_crypto_sig_fingerprints (const char *path, GError **error)
+{
+  g_autofree char *sig_path = g_strconcat (path, ".sig", NULL);
+  gpgme_ctx_t ctx = NULL;
+  gpgme_data_t sig = NULL;
+  gpgme_data_t text = NULL;
+  gpgme_verify_result_t result;
+  gpgme_error_t err;
+  g_autoptr (GStrvBuilder) builder = g_strv_builder_new ();
+
+  g_return_val_if_fail (path != NULL, NULL);
+
+  if (!passfl_crypto_init (error))
+    return NULL;
+
+  err = gpgme_new (&ctx);
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_set_protocol (ctx, GPGME_PROTOCOL_OpenPGP);
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_data_new_from_file (&sig, sig_path, 1);
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_data_new_from_file (&text, path, 1);
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_op_verify (ctx, sig, text, NULL);
+  if (err != GPG_ERR_NO_ERROR)
+    {
+      g_set_error (error, PASSFL_CRYPTO_ERROR, PASSFL_CRYPTO_ERROR_VERIFY,
+                   "Cannot verify '%s': %s", sig_path,
+                   gpgme_strerror (err));
+      goto out;
+    }
+
+  result = gpgme_op_verify_result (ctx);
+  for (gpgme_signature_t s = result != NULL ? result->signatures : NULL;
+       s != NULL; s = s->next)
+    {
+      gpgme_key_t key = NULL;
+
+      if (gpgme_err_code (s->status) != GPG_ERR_NO_ERROR || s->fpr == NULL)
+        continue;
+      if (gpgme_get_key (ctx, s->fpr, &key, 0) == GPG_ERR_NO_ERROR &&
+          key != NULL && key->subkeys != NULL)
+        g_strv_builder_add (builder, key->subkeys->fpr);
+      if (key != NULL)
+        gpgme_key_unref (key);
+    }
+
+out:
+  if (sig != NULL)
+    gpgme_data_release (sig);
+  if (text != NULL)
+    gpgme_data_release (text);
+  if (ctx != NULL)
+    gpgme_release (ctx);
+  return err == GPG_ERR_NO_ERROR ? g_strv_builder_end (builder) : NULL;
+}
+
+/* Minimal OpenPGP packet walk: collect the 8-byte key IDs of the PKESK
+ * (tag 1) packets at the front of the file. Nothing is decrypted. */
+GStrv
+passfl_crypto_file_keyids (const char *path, GError **error)
+{
+  g_autofree char *data = NULL;
+  gsize len = 0;
+  gsize pos = 0;
+  g_autoptr (GStrvBuilder) builder = g_strv_builder_new ();
+  g_autoptr (GPtrArray) ids = NULL;
+  GStrv out;
+
+  g_return_val_if_fail (path != NULL, NULL);
+
+  if (!g_file_get_contents (path, &data, &len, NULL))
+    {
+      g_set_error (error, PASSFL_CRYPTO_ERROR, PASSFL_CRYPTO_ERROR_DECRYPT,
+                   "Cannot read '%s'", path);
+      return NULL;
+    }
+
+  ids = g_ptr_array_new_with_free_func (g_free);
+  while (pos < len)
+    {
+      guchar hdr = (guchar) data[pos];
+      guint tag;
+      gsize body_len = 0;
+      gsize body_off;
+
+      if ((hdr & 0x80) == 0)
+        break; /* not an OpenPGP packet header */
+      if (hdr & 0x40)
+        {
+          /* new format */
+          guchar c;
+
+          tag = hdr & 0x3f;
+          if (pos + 1 >= len)
+            break;
+          c = (guchar) data[pos + 1];
+          if (c < 192)
+            {
+              body_len = c;
+              body_off = pos + 2;
+            }
+          else if (c < 224)
+            {
+              if (pos + 2 >= len)
+                break;
+              body_len = ((gsize) (c - 192) << 8) +
+                         (guchar) data[pos + 2] + 192;
+              body_off = pos + 3;
+            }
+          else if (c == 255)
+            {
+              if (pos + 5 >= len)
+                break;
+              body_len = ((gsize) (guchar) data[pos + 2] << 24) |
+                         ((gsize) (guchar) data[pos + 3] << 16) |
+                         ((gsize) (guchar) data[pos + 4] << 8) |
+                         (gsize) (guchar) data[pos + 5];
+              body_off = pos + 6;
+            }
+          else
+            break; /* partial length — not in the ESK prologue */
+        }
+      else
+        {
+          /* old format */
+          guint lentype = hdr & 3;
+
+          tag = (hdr >> 2) & 0x0f;
+          if (lentype == 0 && pos + 1 < len)
+            {
+              body_len = (guchar) data[pos + 1];
+              body_off = pos + 2;
+            }
+          else if (lentype == 1 && pos + 2 < len)
+            {
+              body_len = ((gsize) (guchar) data[pos + 1] << 8) |
+                         (guchar) data[pos + 2];
+              body_off = pos + 3;
+            }
+          else if (lentype == 2 && pos + 4 < len)
+            {
+              body_len = ((gsize) (guchar) data[pos + 1] << 24) |
+                         ((gsize) (guchar) data[pos + 2] << 16) |
+                         ((gsize) (guchar) data[pos + 3] << 8) |
+                         (gsize) (guchar) data[pos + 4];
+              body_off = pos + 5;
+            }
+          else
+            break; /* indeterminate length */
+        }
+
+      if (tag == 1) /* PKESK: version (1) + key ID (8) + … */
+        {
+          if (body_off + 9 > len)
+            break;
+          {
+            GString *hex = g_string_new (NULL);
+
+            for (guint i = 0; i < 8; i++)
+              g_string_append_printf (hex, "%02X",
+                                      (guchar) data[body_off + 1 + i]);
+            g_ptr_array_add (ids, g_string_free (hex, FALSE));
+          }
+        }
+      else if (tag != 3) /* past the ESK packets — stop */
+        break;
+
+      if (body_off + body_len < body_off) /* overflow */
+        break;
+      pos = body_off + body_len;
+    }
+
+  g_ptr_array_sort_values (ids, (GCompareFunc) g_strcmp0);
+  for (guint i = 0; i < ids->len; i++)
+    if (i == 0 || strcmp (g_ptr_array_index (ids, i),
+                          g_ptr_array_index (ids, i - 1)) != 0)
+      g_strv_builder_add (builder, g_ptr_array_index (ids, i));
+  out = g_strv_builder_end (builder);
+  return out;
+}
+
+GStrv
+passfl_crypto_desired_keyids (const char *const *recipients, GError **error)
+{
+  gpgme_ctx_t ctx = NULL;
+  gpgme_error_t err;
+  g_autoptr (GPtrArray) ids = NULL;
+  g_autoptr (GStrvBuilder) builder = g_strv_builder_new ();
+  GStrv out = NULL;
+
+  g_return_val_if_fail (recipients != NULL, NULL);
+
+  if (!passfl_crypto_init (error))
+    return NULL;
+
+  err = gpgme_new (&ctx);
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_set_protocol (ctx, GPGME_PROTOCOL_OpenPGP);
+  if (err != GPG_ERR_NO_ERROR)
+    {
+      g_set_error (error, PASSFL_CRYPTO_ERROR, PASSFL_CRYPTO_ERROR_INIT,
+                   "GPGME context: %s", gpgme_strerror (err));
+      goto out;
+    }
+
+  ids = g_ptr_array_new_with_free_func (g_free);
+  for (guint r = 0; recipients[r] != NULL; r++)
+    {
+      gpgme_key_t key = NULL;
+
+      err = gpgme_op_keylist_start (ctx, recipients[r], 0);
+      while (err == GPG_ERR_NO_ERROR &&
+             gpgme_op_keylist_next (ctx, &key) == GPG_ERR_NO_ERROR)
+        {
+          for (gpgme_subkey_t sub = key->subkeys; sub != NULL;
+               sub = sub->next)
+            if (sub->can_encrypt && !sub->revoked && !sub->disabled &&
+                !sub->invalid) /* expired stays, like pass's [^idr:] */
+              {
+                g_autofree char *up =
+                    g_ascii_strup (sub->keyid, -1);
+
+                g_ptr_array_add (ids, g_steal_pointer (&up));
+              }
+          gpgme_key_unref (key);
+        }
+      gpgme_op_keylist_end (ctx);
+    }
+
+  g_ptr_array_sort_values (ids, (GCompareFunc) g_strcmp0);
+  for (guint i = 0; i < ids->len; i++)
+    if (i == 0 || strcmp (g_ptr_array_index (ids, i),
+                          g_ptr_array_index (ids, i - 1)) != 0)
+      g_strv_builder_add (builder, g_ptr_array_index (ids, i));
+  out = g_strv_builder_end (builder);
+
+out:
+  if (ctx != NULL)
+    gpgme_release (ctx);
+  return out;
 }

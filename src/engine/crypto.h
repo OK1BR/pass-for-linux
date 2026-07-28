@@ -56,11 +56,29 @@ PassflSecBuf *passfl_crypto_decrypt_file (const char *path, GError **error);
 PassflSecBuf *passfl_crypto_decrypt_mem (const char *data, gsize len,
                                          GError **error);
 
-/* Armored detached signature over data, for signed commits (§6,
- * pass.signcommits). signer is a key spec (user.signingkey) or NULL for
- * gpg's default key. Caller frees. */
-char *passfl_crypto_sign_detached (const char *data, gsize len,
-                                   const char *signer, GError **error);
+/* Detached signature over data — armored for git's gpgsig, binary for
+ * .gpg-id.sig (§2.4). signer is a key spec or NULL for gpg's default
+ * key. Caller frees. */
+GBytes *passfl_crypto_sign_detached (const char *data, gsize len,
+                                     const char *signer, gboolean armor,
+                                     GError **error);
+
+/* Primary fingerprints (40-hex) of the valid signatures on a detached
+ * .sig — what pass reads out of VALIDSIG for the "Signing new GPG id"
+ * message (line 357). Caller frees. */
+GStrv passfl_crypto_sig_fingerprints (const char *path, GError **error);
+
+/* The long key IDs (16-hex, uppercase) this file's PKESK packets say it
+ * is encrypted to — read natively from the OpenPGP packets, step 4 of
+ * the §4.10 re-encryption diff. Sorted, unique. Caller frees. */
+GStrv passfl_crypto_file_keyids (const char *path, GError **error);
+
+/* The long key IDs of all encryption-capable subkeys of every key
+ * matching the given recipients — step 3 of §4.10, mirroring pass's
+ * `--list-keys` sed: revoked/disabled/invalid subkeys excluded, expired
+ * ones (like pass) included. Sorted, unique. Caller frees. */
+GStrv passfl_crypto_desired_keyids (const char *const *recipients,
+                                    GError **error);
 
 /* Encrypt data to recipients and atomically replace path: temp file in
  * the same directory with mode 0666 & ~PASSWORD_STORE_UMASK, fsync,

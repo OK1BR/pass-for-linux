@@ -115,6 +115,16 @@ pass_vcs_test = executable('pass-vcs-test',
 )
 test('vcs', pass_vcs_test, timeout : 120)
 
+# M4: mv/cp/init/re-encryption vs real pass — messages, PKESK key IDs,
+# untouched-bytes checks, groups, signed init, deinit quirks.
+pass_m4_test = executable('pass-m4-test',
+  ['src/m4_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('m4', pass_m4_test, timeout : 120)
+
 # --- App --------------------------------------------------------------------
 m_dep = meson.get_compiler('c').find_library('m', required : false)
 

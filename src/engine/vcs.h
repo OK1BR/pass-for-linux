@@ -40,6 +40,16 @@ void passfl_vcs_free (PassflVcs *vcs);
 gboolean passfl_vcs_commit_file (PassflVcs *vcs, const char *path,
                                  const char *message, GError **error);
 
+/* Same, over several paths at once (files or directories — a directory
+ * stages everything under it, additions and removals alike); used by
+ * mv/cp/init where one commit spans multiple staged changes. Commits
+ * only when the resulting tree differs from HEAD's. */
+gboolean passfl_vcs_commit_paths (PassflVcs *vcs, const char *const *paths,
+                                  const char *message, GError **error);
+
+/* The repository work dir (with trailing '/'), to tell two repos apart. */
+const char *passfl_vcs_workdir (PassflVcs *vcs);
+
 /* One commit that touched an entry. */
 typedef struct {
   char *oid;      /* full hex */
@@ -63,6 +73,16 @@ char *passfl_vcs_msg_insert (const char *name);
 char *passfl_vcs_msg_edit (const char *name, gboolean existed);
 char *passfl_vcs_msg_generate (const char *name, gboolean in_place);
 char *passfl_vcs_msg_remove (const char *name);
+char *passfl_vcs_msg_rename (const char *old_arg, const char *new_arg);
+char *passfl_vcs_msg_copy (const char *old_arg, const char *new_arg);
+/* ids_joined is the ", "-joined id list ("" on deinit — pass's quirky
+ * double space before a subpath tag is reproduced); subpath "" = root. */
+char *passfl_vcs_msg_set_gpg_id (const char *ids_joined,
+                                 const char *subpath);
+char *passfl_vcs_msg_deinit (const char *gpg_id_abs, const char *subpath);
+char *passfl_vcs_msg_reencrypt (const char *ids_joined,
+                                const char *subpath);
+char *passfl_vcs_msg_sign_gpg_id (const char *fprs_joined);
 
 G_END_DECLS
 

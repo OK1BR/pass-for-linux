@@ -24,6 +24,8 @@ typedef enum {
   PASSFL_STORE_ERROR_SNEAKY_PATH,   /* ".." component (SPEC §2.5) */
   PASSFL_STORE_ERROR_WRITE,         /* mkdir/unlink/rename failed */
   PASSFL_STORE_ERROR_NOT_FOUND,     /* entry does not exist */
+  PASSFL_STORE_ERROR_EXISTS,        /* destination exists, not forced */
+  PASSFL_STORE_ERROR_CANCELLED,     /* re-encryption cancelled */
 } PassflStoreError;
 
 /* $PASSWORD_STORE_DIR, or ~/.password-store when unset/empty (SPEC §5).
@@ -86,6 +88,51 @@ gboolean passfl_store_write_entry (const char *root, const char *name,
  * walk past it, which only differs on a store with nothing in it). */
 gboolean passfl_store_delete_entry (const char *root, const char *name,
                                     GError **error);
+
+/* Progress callback for re-encryption: called with each entry that is
+ * about to be re-encrypted; return FALSE to cancel (SPEC §4.4-style). */
+typedef gboolean (*PassflReencProgress) (const char *name,
+                                         gpointer user_data);
+
+/* The §4.10 diff: walk *.gpg under target (an absolute path inside the
+ * store — a file or a directory), resolve recipients per directory,
+ * expand gpg groups, and re-encrypt only files whose current PKESK key
+ * IDs differ from the resolved encryption subkeys. Skips symlinks and
+ * .git. n_changed (optional) receives the number rewritten. */
+gboolean passfl_store_reencrypt (const char *root, const char *target,
+                                 PassflReencProgress progress,
+                                 gpointer user_data, guint *n_changed,
+                                 GError **error);
+
+/* Does this entry need re-encryption (the state `pass init` would fix,
+ * SPEC §9)? Sets *needed; FALSE on error. */
+gboolean passfl_store_entry_needs_reencrypt (const char *root,
+                                             const char *name,
+                                             gboolean *needed,
+                                             GError **error);
+
+/* pass mv / pass cp (§4.9, cmd_copy_move lines 596–649): the argument
+ * path magic of the script, then move/copy, re-encrypt the destination,
+ * and the §6 commits ("Rename old to new." / "Copy old to new.", plus
+ * "Remove old." when the source lived in a different repository).
+ * force=FALSE fails with EXISTS instead of overwriting. */
+gboolean passfl_store_move (const char *root, const char *old_arg,
+                            const char *new_arg, gboolean force,
+                            PassflReencProgress progress, gpointer user_data,
+                            GError **error);
+gboolean passfl_store_copy (const char *root, const char *old_arg,
+                            const char *new_arg, gboolean force,
+                            PassflReencProgress progress, gpointer user_data,
+                            GError **error);
+
+/* pass init [-p subpath] ids… (cmd_init lines 320–365): write (or, with
+ * ids NULL/empty, remove) .gpg-id for the subtree, sign it when
+ * PASSWORD_STORE_SIGNING_KEY is set, commit with the §6 messages and
+ * re-encrypt the affected subtree. subpath "" means the store root. */
+gboolean passfl_store_init_ids (const char *root, const char *subpath,
+                                const char *const *ids,
+                                PassflReencProgress progress,
+                                gpointer user_data, GError **error);
 
 /* On-disk change notification: one callback (in the GLib main context
  * that created the watch) whenever anything under root changes, events

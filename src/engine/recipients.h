@@ -41,6 +41,12 @@ GStrv passfl_recipients_resolve (const char *root, const char *dir_rel,
  * skipped. Internal whitespace ("Full Name <mail>") is preserved. */
 GStrv passfl_gpg_id_parse (const char *content);
 
+/* Expand gpg group names (§4.9): a recipient that matches a `group
+ * name=members…` line in gpg.conf is replaced by its members — the
+ * native equivalent of pass's `--list-config group` step (line 112,
+ * §4.10 step 2). Non-group recipients pass through. Caller frees. */
+GStrv passfl_recipients_expand_groups (const char *const *recipients);
+
 G_END_DECLS
 
 #endif /* PASSFL_RECIPIENTS_H */
