@@ -113,27 +113,21 @@ passfl_secbuf_free (PassflSecBuf *buf)
   g_free (buf);
 }
 
-PassflSecBuf *
-passfl_crypto_decrypt_file (const char *path, GError **error)
+/* what identifies the ciphertext source in error messages */
+static PassflSecBuf *
+decrypt_data (gpgme_data_t cipher /* consumed */, const char *what,
+              GError **error)
 {
   gpgme_ctx_t ctx = NULL;
-  gpgme_data_t cipher = NULL;
   gpgme_data_t plain = NULL;
   gpgme_error_t err;
   PassflSecBuf *buf = NULL;
   char *mem;
   size_t len;
 
-  g_return_val_if_fail (path != NULL, NULL);
-
-  if (!passfl_crypto_init (error))
-    return NULL;
-
   err = gpgme_new (&ctx);
   if (err == GPG_ERR_NO_ERROR)
     err = gpgme_set_protocol (ctx, GPGME_PROTOCOL_OpenPGP);
-  if (err == GPG_ERR_NO_ERROR)
-    err = gpgme_data_new_from_file (&cipher, path, 1);
   if (err == GPG_ERR_NO_ERROR)
     err = gpgme_data_new (&plain);
   if (err == GPG_ERR_NO_ERROR)
@@ -148,7 +142,7 @@ passfl_crypto_decrypt_file (const char *path, GError **error)
       g_set_error (error, PASSFL_CRYPTO_ERROR,
                    cancelled ? PASSFL_CRYPTO_ERROR_CANCELLED
                              : PASSFL_CRYPTO_ERROR_DECRYPT,
-                   "Cannot decrypt '%s': %s", path, gpgme_strerror (err));
+                   "Cannot decrypt '%s': %s", what, gpgme_strerror (err));
       goto out;
     }
 
@@ -159,7 +153,7 @@ passfl_crypto_decrypt_file (const char *path, GError **error)
   if (mem == NULL)
     {
       g_set_error (error, PASSFL_CRYPTO_ERROR, PASSFL_CRYPTO_ERROR_DECRYPT,
-                   "Cannot read decrypted data for '%s'", path);
+                   "Cannot read decrypted data for '%s'", what);
       goto out;
     }
   buf = passfl_secbuf_new (mem, (gssize) len);
@@ -169,11 +163,115 @@ passfl_crypto_decrypt_file (const char *path, GError **error)
 out:
   if (plain != NULL)
     gpgme_data_release (plain);
-  if (cipher != NULL)
-    gpgme_data_release (cipher);
+  gpgme_data_release (cipher);
   if (ctx != NULL)
     gpgme_release (ctx);
   return buf;
+}
+
+PassflSecBuf *
+passfl_crypto_decrypt_file (const char *path, GError **error)
+{
+  gpgme_data_t cipher = NULL;
+  gpgme_error_t err;
+
+  g_return_val_if_fail (path != NULL, NULL);
+
+  if (!passfl_crypto_init (error))
+    return NULL;
+  err = gpgme_data_new_from_file (&cipher, path, 1);
+  if (err != GPG_ERR_NO_ERROR)
+    {
+      g_set_error (error, PASSFL_CRYPTO_ERROR, PASSFL_CRYPTO_ERROR_DECRYPT,
+                   "Cannot read '%s': %s", path, gpgme_strerror (err));
+      return NULL;
+    }
+  return decrypt_data (cipher, path, error);
+}
+
+PassflSecBuf *
+passfl_crypto_decrypt_mem (const char *data, gsize len, GError **error)
+{
+  gpgme_data_t cipher = NULL;
+  gpgme_error_t err;
+
+  g_return_val_if_fail (data != NULL, NULL);
+
+  if (!passfl_crypto_init (error))
+    return NULL;
+  err = gpgme_data_new_from_mem (&cipher, data, len, 1);
+  if (err != GPG_ERR_NO_ERROR)
+    {
+      g_set_error (error, PASSFL_CRYPTO_ERROR, PASSFL_CRYPTO_ERROR_DECRYPT,
+                   "Cannot read ciphertext: %s", gpgme_strerror (err));
+      return NULL;
+    }
+  return decrypt_data (cipher, "git blob", error);
+}
+
+char *
+passfl_crypto_sign_detached (const char *data, gsize len,
+                             const char *signer, GError **error)
+{
+  gpgme_ctx_t ctx = NULL;
+  gpgme_data_t in = NULL;
+  gpgme_data_t out = NULL;
+  gpgme_error_t err;
+  char *mem = NULL;
+  char *sig = NULL;
+  size_t sig_len;
+
+  g_return_val_if_fail (data != NULL, NULL);
+
+  if (!passfl_crypto_init (error))
+    return NULL;
+
+  err = gpgme_new (&ctx);
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_set_protocol (ctx, GPGME_PROTOCOL_OpenPGP);
+  if (err == GPG_ERR_NO_ERROR)
+    gpgme_set_armor (ctx, 1);
+  if (err == GPG_ERR_NO_ERROR && signer != NULL && *signer != '\0')
+    {
+      gpgme_key_t key = NULL;
+
+      err = gpgme_get_key (ctx, signer, &key, 1);
+      if (err == GPG_ERR_NO_ERROR)
+        {
+          err = gpgme_signers_add (ctx, key);
+          gpgme_key_unref (key);
+        }
+    }
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_data_new_from_mem (&in, data, len, 0);
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_data_new (&out);
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_op_sign (ctx, in, out, GPGME_SIG_MODE_DETACH);
+
+  if (err != GPG_ERR_NO_ERROR)
+    {
+      g_set_error (error, PASSFL_CRYPTO_ERROR, PASSFL_CRYPTO_ERROR_ENCRYPT,
+                   "Cannot sign commit: %s", gpgme_strerror (err));
+      goto out;
+    }
+
+  mem = gpgme_data_release_and_get_mem (out, &sig_len);
+  out = NULL;
+  if (mem != NULL)
+    {
+      sig = g_strndup (mem, sig_len);
+      gpgme_free (mem);
+    }
+
+out:
+  if (in != NULL)
+    gpgme_data_release (in);
+  if (out != NULL)
+    gpgme_data_release (out);
+  if (ctx != NULL)
+    gpgme_release (ctx);
+  return sig;
 }
 
 /* --- encryption (M2) ------------------------------------------------------ */

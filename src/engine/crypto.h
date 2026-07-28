@@ -52,6 +52,16 @@ gboolean passfl_crypto_init (GError **error);
  * call may sit in the agent's pinentry for as long as the user does. */
 PassflSecBuf *passfl_crypto_decrypt_file (const char *path, GError **error);
 
+/* Same, over an in-memory ciphertext (a git blob of an old revision). */
+PassflSecBuf *passfl_crypto_decrypt_mem (const char *data, gsize len,
+                                         GError **error);
+
+/* Armored detached signature over data, for signed commits (§6,
+ * pass.signcommits). signer is a key spec (user.signingkey) or NULL for
+ * gpg's default key. Caller frees. */
+char *passfl_crypto_sign_detached (const char *data, gsize len,
+                                   const char *signer, GError **error);
+
 /* Encrypt data to recipients and atomically replace path: temp file in
  * the same directory with mode 0666 & ~PASSWORD_STORE_UMASK, fsync,
  * rename(2) (SPEC §7.3, §7.7). Reproduces pass's gpg invocation via

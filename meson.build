@@ -21,7 +21,7 @@ gpgme_dep  = dependency('gpgme')            # M1: decrypt, agent pinentry
 gcrypt_dep = dependency('libgcrypt')        # M1: secure buffers; M5: TOTP HMAC
 gtk_dep    = dependency('gtk4')             # M1: front-end
 adw_dep    = dependency('libadwaita-1')     # M1: front-end
-# M3: dependency('libgit2')                 — commit per operation, history
+git2_dep   = dependency('libgit2')          # M3: commit per op, history
 
 engine_inc = include_directories('src/engine')
 
@@ -34,8 +34,9 @@ engine_sources = [
   'src/engine/crypto.c',       # M1: GPGME decrypt, secure buffers (§3, §7)
   'src/engine/entry.c',        # M1: line-1 password + metadata (§2.3)
   'src/engine/generate.c',     # M2: rejection sampling from getrandom (§4.8)
+  'src/engine/vcs.c',          # M3: libgit2, commit messages per §6
 ]
-engine_deps = [glib_dep, gio_dep, gpgme_dep, gcrypt_dep]
+engine_deps = [glib_dep, gio_dep, gpgme_dep, gcrypt_dep, git2_dep]
 
 engine_lib = static_library('passfl-engine',
   engine_sources,
@@ -103,6 +104,16 @@ pass_conformance_test = executable('pass-conformance-test',
   link_with : engine_lib,
 )
 test('conformance', pass_conformance_test, timeout : 120)
+
+# M3: git — §6 messages vs real pass on identical repos, signcommits
+# verified by real `git verify-commit`, history and revision reads.
+pass_vcs_test = executable('pass-vcs-test',
+  ['src/vcs_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('vcs', pass_vcs_test, timeout : 120)
 
 # --- App --------------------------------------------------------------------
 m_dep = meson.get_compiler('c').find_library('m', required : false)
