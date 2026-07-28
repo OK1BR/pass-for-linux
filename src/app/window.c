@@ -236,6 +236,29 @@ on_selection_changed (PassflWindow *self, GParamSpec *pspec, gpointer sel)
   open_entry (self, item->rel);
 }
 
+/* Double-click / Enter on a folder row toggles its subtree (activate
+ * fires for both); entries are opened by selection already. */
+static void
+on_row_activated (GtkListView *list, guint position, gpointer data)
+{
+  GtkSelectionModel *model = gtk_list_view_get_model (list);
+  g_autoptr (GObject) obj = NULL;
+
+  (void) data;
+  if (model == NULL)
+    return;
+  obj = g_list_model_get_item (G_LIST_MODEL (model), position);
+  if (obj != NULL && GTK_IS_TREE_LIST_ROW (obj))
+    {
+      GtkTreeListRow *row = GTK_TREE_LIST_ROW (obj);
+      g_autoptr (GObject) inner = gtk_tree_list_row_get_item (row);
+
+      if (inner != NULL && PASSFL_ITEM (inner)->is_dir)
+        gtk_tree_list_row_set_expanded (
+            row, !gtk_tree_list_row_get_expanded (row));
+    }
+}
+
 /* --- sidebar model ---------------------------------------------------------- */
 
 static GListStore *
@@ -778,10 +801,21 @@ act_delete (GSimpleAction *action, GVariant *param, gpointer data)
   if (self->editing || self->current_rel == NULL)
     return;
   dlg = adw_alert_dialog_new ("Delete entry?", NULL);
-  adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
-                                "Remove %s from the store? There is no "
-                                "undo until git history lands (M3).",
-                                self->current_rel);
+  {
+    g_autofree char *path = g_strconcat (self->store_dir, "/",
+                                         self->current_rel, ".gpg", NULL);
+    PassflVcs *vcs = passfl_vcs_open (self->store_dir, path, NULL);
+
+    adw_alert_dialog_format_body (
+        ADW_ALERT_DIALOG (dlg),
+        vcs != NULL
+            ? "Remove %s from the store? The removal is committed to "
+              "git, so an old revision can still be recovered."
+            : "Remove %s from the store? This store has no git "
+              "history — there is no undo.",
+        self->current_rel);
+    passfl_vcs_free (vcs);
+  }
   adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg), "cancel",
                                   "Cancel", "delete", "Delete", NULL);
   adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg),
@@ -1180,6 +1214,8 @@ build_sidebar (PassflWindow *self)
 
   self->list = GTK_LIST_VIEW (gtk_list_view_new (NULL, NULL));
   gtk_widget_add_css_class (GTK_WIDGET (self->list), "navigation-sidebar");
+  g_signal_connect (self->list, "activate",
+                    G_CALLBACK (on_row_activated), self);
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scrolled),
                                  GTK_WIDGET (self->list));
 
