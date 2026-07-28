@@ -19,6 +19,7 @@
 #include "entry-view.h"
 #include "entry.h"
 #include "history.h"
+#include "recipient-view.h"
 #include "store.h"
 #include "vcs.h"
 
@@ -94,6 +95,9 @@ struct _PassflWindow {
   AdwWindowTitle *title;
   GtkWidget *btn_new, *btn_edit, *btn_delete, *btn_save, *btn_cancel;
   GtkWidget *btn_history;
+  AdwBanner *reenc_banner;     /* §4.10 mismatch warning (M4) */
+  char *pending_mvcp_new;      /* rename/copy waiting for overwrite confirm */
+  gboolean pending_mvcp_copy;
 
   char *current_rel;           /* entry shown in the view, or NULL */
   gboolean editing;
@@ -125,6 +129,7 @@ typedef struct {
   char *rel;
   char *path;
   PassflSecBuf *buf;
+  gboolean needs_reenc;        /* §4.10 sets disagree (M4) */
   GError *error;
 } DecryptJob;
 
@@ -159,6 +164,7 @@ decrypt_done (gpointer data)
   gtk_widget_set_visible (self->btn_edit, TRUE);
   gtk_widget_set_visible (self->btn_delete, TRUE);
   gtk_widget_set_visible (self->btn_history, TRUE);
+  adw_banner_set_revealed (self->reenc_banner, job->needs_reenc);
 
 out:
   g_clear_pointer (&job->buf, passfl_secbuf_free);
@@ -176,6 +182,9 @@ decrypt_thread (gpointer data)
   DecryptJob *job = data;
 
   job->buf = passfl_crypto_decrypt_file (job->path, &job->error);
+  if (job->buf != NULL)
+    passfl_store_entry_needs_reencrypt (job->self->store_dir, job->rel,
+                                        &job->needs_reenc, NULL);
   g_idle_add (decrypt_done, job);
   return NULL;
 }
@@ -467,6 +476,8 @@ static void
 set_editing (PassflWindow *self, gboolean editing)
 {
   self->editing = editing;
+  if (editing)
+    adw_banner_set_revealed (self->reenc_banner, FALSE);
   gtk_stack_set_visible_child_name (self->content_stack,
                                     editing ? "edit" : "view");
   gtk_widget_set_visible (self->btn_save, editing);
@@ -750,6 +761,7 @@ on_confirm_delete (AdwAlertDialog *dialog, GAsyncResult *result,
   gtk_widget_set_visible (self->btn_edit, FALSE);
   gtk_widget_set_visible (self->btn_delete, FALSE);
   gtk_widget_set_visible (self->btn_history, FALSE);
+  adw_banner_set_revealed (self->reenc_banner, FALSE);
   passfl_entry_view_show_placeholder (self->entry_view);
   adw_navigation_page_set_title (self->content_page, "Entry");
   rebuild_sidebar (self);
@@ -819,6 +831,191 @@ act_history (GSimpleAction *action, GVariant *param, gpointer data)
 }
 
 static void
+on_recipients_reencrypted (guint n_changed, gpointer data)
+{
+  PassflWindow *self = data;
+
+  toast (self, "Re-encrypted %u %s", n_changed,
+         n_changed == 1 ? "entry" : "entries");
+  rebuild_sidebar (self);
+  if (self->current_rel != NULL)
+    open_entry (self, self->current_rel);
+}
+
+static void act_recipients (GSimpleAction *action, GVariant *param,
+                            gpointer data);
+
+static void
+act_recipients_from_banner (PassflWindow *self)
+{
+  act_recipients (NULL, NULL, self);
+}
+
+static void
+act_recipients (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  PassflWindow *self = data;
+  AdwDialog *dlg;
+
+  (void) action;
+  (void) param;
+  if (self->editing || self->current_rel == NULL)
+    return;
+  dlg = passfl_recipient_view_new (self->store_dir, self->current_rel,
+                                   on_recipients_reencrypted, self);
+  adw_dialog_present (dlg, GTK_WIDGET (self));
+}
+
+/* rename / duplicate — engine mv/cp with an overwrite confirm on EXISTS */
+
+static void do_mvcp (PassflWindow *self, const char *new_name,
+                     gboolean is_copy, gboolean force);
+
+static void
+on_mvcp_overwrite (AdwAlertDialog *dialog, GAsyncResult *result,
+                   gpointer data)
+{
+  PassflWindow *self = data;
+  const char *response = adw_alert_dialog_choose_finish (dialog, result);
+
+  if (self->toasts == NULL || self->pending_mvcp_new == NULL ||
+      self->current_rel == NULL)
+    return;
+  if (strcmp (response, "overwrite") == 0)
+    {
+      g_autofree char *target = g_steal_pointer (&self->pending_mvcp_new);
+
+      do_mvcp (self, target, self->pending_mvcp_copy, TRUE);
+    }
+  else
+    g_clear_pointer (&self->pending_mvcp_new, g_free);
+}
+
+static void
+do_mvcp (PassflWindow *self, const char *new_name, gboolean is_copy,
+         gboolean force)
+{
+  GError *error = NULL;
+  gboolean ok = is_copy
+      ? passfl_store_copy (self->store_dir, self->current_rel, new_name,
+                           force, NULL, NULL, &error)
+      : passfl_store_move (self->store_dir, self->current_rel, new_name,
+                           force, NULL, NULL, &error);
+
+  if (!ok && g_error_matches (error, PASSFL_STORE_ERROR,
+                              PASSFL_STORE_ERROR_EXISTS))
+    {
+      AdwDialog *dlg = adw_alert_dialog_new ("Overwrite entry?", NULL);
+
+      g_clear_error (&error);
+      g_free (self->pending_mvcp_new);
+      self->pending_mvcp_new = g_strdup (new_name);
+      self->pending_mvcp_copy = is_copy;
+      adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
+                                    "An entry for %s already exists.",
+                                    new_name);
+      adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg), "cancel",
+                                      "Cancel", "overwrite", "Overwrite",
+                                      NULL);
+      adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg),
+                                                "overwrite",
+                                                ADW_RESPONSE_DESTRUCTIVE);
+      adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg),
+                                             "cancel");
+      adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self),
+                               NULL,
+                               (GAsyncReadyCallback) on_mvcp_overwrite,
+                               self);
+      return;
+    }
+  if (!ok)
+    {
+      toast (self, "%s", error->message);
+      g_error_free (error);
+      return;
+    }
+  toast (self, "%s %s", is_copy ? "Copied to" : "Renamed to", new_name);
+  g_free (self->current_rel);
+  self->current_rel = g_strdup (new_name);
+  rebuild_sidebar (self);
+  open_entry (self, new_name);
+}
+
+static void
+on_mvcp_response (AdwAlertDialog *dialog, GAsyncResult *result,
+                  gpointer data)
+{
+  PassflWindow *self = data;
+  const char *response = adw_alert_dialog_choose_finish (dialog, result);
+  GtkWidget *entry;
+  g_autofree char *name = NULL;
+  gboolean is_copy;
+
+  if (self->toasts == NULL || strcmp (response, "ok") != 0 ||
+      self->current_rel == NULL)
+    return;
+  entry = adw_alert_dialog_get_extra_child (dialog);
+  is_copy = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (dialog),
+                                                "passfl-is-copy"));
+  name = g_strdup (gtk_editable_get_text (GTK_EDITABLE (entry)));
+  g_strstrip (name);
+  if (*name == '\0' || !passfl_entry_name_is_safe (name) ||
+      name[0] == '/' || strstr (name, "//") != NULL)
+    {
+      toast (self, "Invalid entry name '%s'", name);
+      return;
+    }
+  if (strcmp (name, self->current_rel) == 0)
+    return;
+  do_mvcp (self, name, is_copy, FALSE);
+}
+
+static void
+mvcp_dialog (PassflWindow *self, gboolean is_copy)
+{
+  AdwDialog *dlg;
+  GtkWidget *entry;
+
+  if (self->editing || self->current_rel == NULL)
+    return;
+  dlg = adw_alert_dialog_new (is_copy ? "Duplicate entry" : "Rename entry",
+                              NULL);
+  adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg), "%s %s as:",
+                                is_copy ? "Copy" : "Rename",
+                                self->current_rel);
+  entry = gtk_entry_new ();
+  gtk_editable_set_text (GTK_EDITABLE (entry), self->current_rel);
+  gtk_widget_add_css_class (entry, "monospace");
+  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), entry);
+  g_object_set_data (G_OBJECT (dlg), "passfl-is-copy",
+                     GINT_TO_POINTER (is_copy));
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg), "cancel",
+                                  "Cancel", "ok",
+                                  is_copy ? "Duplicate" : "Rename", NULL);
+  adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg), "ok",
+                                            ADW_RESPONSE_SUGGESTED);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "ok");
+  adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
+                           (GAsyncReadyCallback) on_mvcp_response, self);
+}
+
+static void
+act_rename (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  (void) action;
+  (void) param;
+  mvcp_dialog (data, FALSE);
+}
+
+static void
+act_copy_entry (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  (void) action;
+  (void) param;
+  mvcp_dialog (data, TRUE);
+}
+
+static void
 on_store_changed (gpointer data)
 {
   PassflWindow *self = data;
@@ -869,6 +1066,9 @@ static const GActionEntry win_actions[] = {
   { .name = "save", .activate = act_save },
   { .name = "cancel", .activate = act_cancel },
   { .name = "history", .activate = act_history },
+  { .name = "recipients", .activate = act_recipients },
+  { .name = "rename", .activate = act_rename },
+  { .name = "copy-entry", .activate = act_copy_entry },
 };
 
 static gboolean
@@ -920,6 +1120,9 @@ build_sidebar (PassflWindow *self)
 
   GMenu *menu = g_menu_new ();
   g_menu_append (menu, "_New entry", "win.new");
+  g_menu_append (menu, "Re_name entry…", "win.rename");
+  g_menu_append (menu, "Dupl_icate entry…", "win.copy-entry");
+  g_menu_append (menu, "Re_cipients…", "win.recipients");
   g_menu_append (menu, "_Refresh", "win.refresh");
   g_menu_append (menu, "_About Pass for Linux", "win.about");
   GtkWidget *menu_btn = gtk_menu_button_new ();
@@ -1002,9 +1205,21 @@ build_content (PassflWindow *self)
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->btn_save);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->btn_cancel);
 
-  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), header);
-  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (tbv),
-                                GTK_WIDGET (self->content_stack));
+  self->reenc_banner = ADW_BANNER (adw_banner_new (
+      "Not encrypted to the resolved keys — pass init would fix this"));
+  adw_banner_set_button_label (self->reenc_banner, "Details");
+  g_signal_connect_swapped (self->reenc_banner, "button-clicked",
+                            G_CALLBACK (act_recipients_from_banner), self);
+
+  {
+    GtkWidget *vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+
+    gtk_box_append (GTK_BOX (vbox), GTK_WIDGET (self->reenc_banner));
+    gtk_widget_set_vexpand (GTK_WIDGET (self->content_stack), TRUE);
+    gtk_box_append (GTK_BOX (vbox), GTK_WIDGET (self->content_stack));
+    adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), header);
+    adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (tbv), vbox);
+  }
   return tbv;
 }
 
@@ -1025,6 +1240,7 @@ passfl_window_dispose (GObject *obj)
   g_clear_pointer (&self->pending_name, g_free);
   g_clear_pointer (&self->pending_content, passfl_secbuf_free);
   g_clear_pointer (&self->pending_message, g_free);
+  g_clear_pointer (&self->pending_mvcp_new, g_free);
   g_clear_object (&self->roots);
   if (self->flat != NULL)
     g_clear_pointer (&self->flat, g_ptr_array_unref);

@@ -80,6 +80,11 @@ GStrv passfl_crypto_file_keyids (const char *path, GError **error);
 GStrv passfl_crypto_desired_keyids (const char *const *recipients,
                                     GError **error);
 
+/* Human description of the key a recipient string resolves to
+ * ("Name <mail> — 16-hex key ID"), NULL when no usable key matches.
+ * For the recipient view (SPEC §9). Caller frees. */
+char *passfl_crypto_describe_recipient (const char *recipient);
+
 /* Encrypt data to recipients and atomically replace path: temp file in
  * the same directory with mode 0666 & ~PASSWORD_STORE_UMASK, fsync,
  * rename(2) (SPEC §7.3, §7.7). Reproduces pass's gpg invocation via

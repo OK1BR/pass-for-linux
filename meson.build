@@ -135,6 +135,7 @@ executable('pass-for-linux',
     'src/app/entry-view.c',  # M1: reveal, copy with the clear timer
     'src/app/entry-edit.c',  # M2: structured editor, generator, strength
     'src/app/history.c',     # M3: per-entry history, plaintext diff, restore
+    'src/app/recipient-view.c', # M4: recipients + needs-reencryption
   ],
   include_directories : engine_inc,
   dependencies : [glib_dep, gio_dep, gpgme_dep, gcrypt_dep, gtk_dep, adw_dep,

@@ -820,3 +820,38 @@ out:
     gpgme_release (ctx);
   return out;
 }
+
+char *
+passfl_crypto_describe_recipient (const char *recipient)
+{
+  gpgme_ctx_t ctx = NULL;
+  gpgme_key_t key = NULL;
+  gpgme_error_t err;
+  char *desc = NULL;
+
+  g_return_val_if_fail (recipient != NULL, NULL);
+
+  if (!passfl_crypto_init (NULL))
+    return NULL;
+  err = gpgme_new (&ctx);
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_set_protocol (ctx, GPGME_PROTOCOL_OpenPGP);
+  if (err == GPG_ERR_NO_ERROR)
+    err = gpgme_op_keylist_start (ctx, recipient, 0);
+  while (err == GPG_ERR_NO_ERROR && desc == NULL &&
+         gpgme_op_keylist_next (ctx, &key) == GPG_ERR_NO_ERROR)
+    {
+      if (!key->revoked && !key->expired && !key->disabled &&
+          key->can_encrypt && key->uids != NULL)
+        desc = g_strdup_printf ("%s — %s", key->uids->uid,
+                                key->subkeys != NULL ? key->subkeys->keyid
+                                                     : "?");
+      gpgme_key_unref (key);
+    }
+  if (ctx != NULL)
+    {
+      gpgme_op_keylist_end (ctx);
+      gpgme_release (ctx);
+    }
+  return desc;
+}

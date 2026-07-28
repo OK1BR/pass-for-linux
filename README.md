@@ -12,12 +12,13 @@ store — the same directory of GPG-encrypted files, read and written in place.
 `pass` on the command line and this app can be used on one store
 interchangeably; neither needs to know about the other.
 
-> **Status:** M3 — git works. Every write commits through libgit2 with
-> `pass`-compatible messages (§6), signed when `pass.signcommits` says so;
-> per-entry history shows native plaintext diffs of old revisions and can
-> restore one. Plus everything from M2: atomic umask-correct writes,
-> `--compress-algo=none` / `--no-encrypt-to` via GPGME, signed `.gpg-id`,
-> all conformance-tested against `pass` 1.7.4.
+> **Status:** M4 — the full operation set. mv/cp with selective
+> re-encryption (§4.10 as a diff over PKESK key IDs, gpg groups included),
+> init/deinit with signed `.gpg-id`, a recipient view with the
+> "needs re-encryption" warning and one-click fix; git commits with
+> `pass`-compatible messages on everything, per-entry history with
+> plaintext diffs and restore. Conformance-tested against `pass` 1.7.4
+> throughout. Remaining: TOTP (M5) and packaging (M6).
 > Read [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Why

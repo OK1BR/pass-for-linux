@@ -14,16 +14,16 @@ Scope/design: `docs/SPEC.md` (written 2026-07-28 — **read it first**; it is a
 specification of `pass` behaviour derived from the script itself, with line
 references, plus the decided architecture and milestones).
 
-**Status: M3 done** — git via libgit2 (`vcs.c`): repo discovery with
-ceiling (§6), one commit per operation only when something changed,
-§6-exact messages (edit says "Pass for Linux" — the §11.3 deviation),
-pass.signcommits/commit.gpgsign signing through GPGME verified by real
-`git verify-commit`; per-entry history + revision reads. UI: history
-dialog with native plaintext line diffs and restore (`history.c`).
-Everything M2 still holds (conformance rig, §2.4, §4.5/§4.6/§7.7
-guards, live sidebar). 7/7 gates green. PASSWORD_STORE_GPG_OPTS still
-refused on writes (cannot pass through GPGME). Next: M4 (mv/cp with
-re-encryption, init, recipient view + "needs re-encryption" warning).
+**Status: M4 done** — mv/cp with the §4.10 re-encryption diff (native
+PKESK key ID reads, gpg group expansion from gpg.conf, rewrite only on
+key-set mismatch), init/deinit with PASSWORD_STORE_SIGNING_KEY signing
+and byte-exact messages (including deinit's absolute path and the
+empty-id double space), needs-reencrypt query; UI banner warning +
+recipients dialog with one-click subtree re-encrypt, rename/duplicate.
+All earlier milestones hold; 8/8 gates green (`m4_test.c` is the
+mv/cp/init rig vs real pass). PASSWORD_STORE_GPG_OPTS still refused on
+writes. Next: M5 (TOTP: otpauth:// parsing, native HMAC codes,
+countdown UI) then M6 (packaging: PKGBUILD, metainfo, icon, .desktop).
 
 ## Four rules that override convenience
 
