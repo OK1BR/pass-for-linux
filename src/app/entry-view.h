@@ -7,6 +7,7 @@
 
 #include <adwaita.h>
 
+#include "crypto.h"
 #include "entry.h"
 
 G_BEGIN_DECLS
@@ -28,6 +29,15 @@ void passfl_entry_view_show_error (PassflEntryView *self, const char *name,
 /* Takes ownership of entry — wiped on replace and on dispose. */
 void passfl_entry_view_show_entry (PassflEntryView *self, const char *name,
                                    PassflEntry *entry);
+
+/* HOTP generated a code: the entry was rebuilt with the counter bumped
+ * (content, transfer full) and must be written back and committed with
+ * pass-otp's "Increment HOTP counter for <name>." message (M5). */
+typedef void (*PassflEntryViewHotpFunc) (PassflSecBuf *content,
+                                         gpointer user_data);
+void passfl_entry_view_set_hotp_handler (PassflEntryView *self,
+                                         PassflEntryViewHotpFunc func,
+                                         gpointer user_data);
 
 /* Hand the shown entry over (for the editor); the view falls back to
  * the placeholder. NULL when nothing is shown. */

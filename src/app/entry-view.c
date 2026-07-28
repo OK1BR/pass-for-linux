@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "crypto.h"
+#include "otp.h"
 
 #define MASK "••••••••••" /* fixed width — never leaks the real length */
 #define DEFAULT_CLIP_TIME 45
@@ -29,6 +30,11 @@ struct _PassflEntryView {
   AdwStatusPage *status;
   GtkWidget *groups_box;     /* rebuilt per entry */
   PassflEntry *entry;        /* owned; wiped on replace/dispose */
+
+  GPtrArray *otp_rows;       /* OtpRow — live TOTP rows (M5) */
+  guint otp_timer_id;
+  PassflEntryViewHotpFunc hotp_func;
+  gpointer hotp_user_data;
 
   /* Clipboard countdown state — independent of the shown entry. */
   PassflSecBuf *clip_pending;   /* secret waiting for the previous-content read */
@@ -206,6 +212,219 @@ toast (PassflEntryView *self, const char *fmt, ...)
   g_free (msg);
 }
 
+/* --- live OTP rows (M5) --------------------------------------------------- */
+
+static GtkWidget *flat_button (const char *icon, const char *tooltip);
+
+typedef struct {
+  PassflOtp *otp;
+  GtkWidget *row;          /* AdwActionRow, subtitle carries the code */
+  GtkWidget *ring;         /* GtkDrawingArea countdown */
+} OtpRow;
+
+static void
+otp_row_free (gpointer data)
+{
+  OtpRow *r = data;
+
+  passfl_otp_free (r->otp);
+  g_free (r);
+}
+
+static void
+otp_row_update (OtpRow *r)
+{
+  GError *error = NULL;
+  gint64 now = (gint64) (g_get_real_time () / G_USEC_PER_SEC);
+  g_autofree char *code = passfl_otp_code (r->otp, now, &error);
+
+  if (code == NULL)
+    {
+      adw_action_row_set_subtitle (ADW_ACTION_ROW (r->row),
+                                   error != NULL ? error->message
+                                                 : "cannot compute code");
+      g_clear_error (&error);
+      return;
+    }
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (r->row), code);
+  gtk_widget_queue_draw (r->ring);
+}
+
+static gboolean
+otp_tick (gpointer data)
+{
+  PassflEntryView *self = data;
+
+  for (guint i = 0; i < self->otp_rows->len; i++)
+    otp_row_update (g_ptr_array_index (self->otp_rows, i));
+  return G_SOURCE_CONTINUE;
+}
+
+/* countdown ring: the remaining fraction of the period as an arc */
+static void
+draw_ring (GtkDrawingArea *area, cairo_t *cr, int width, int height,
+           gpointer data)
+{
+  OtpRow *r = data;
+  gint64 now = (gint64) (g_get_real_time () / G_USEC_PER_SEC);
+  guint period = passfl_otp_period (r->otp);
+  guint remaining = passfl_otp_remaining (r->otp, now);
+  double frac = (double) remaining / (double) period;
+  double cx = width / 2.0, cy = height / 2.0;
+  double radius = MIN (cx, cy) - 2.0;
+  GdkRGBA color;
+
+  gtk_widget_get_color (GTK_WIDGET (area), &color);
+  cairo_set_line_width (cr, 3.0);
+  gdk_cairo_set_source_rgba (cr, &(GdkRGBA) { color.red, color.green,
+                                              color.blue, 0.25 });
+  cairo_arc (cr, cx, cy, radius, 0, 2 * G_PI);
+  cairo_stroke (cr);
+  gdk_cairo_set_source_rgba (cr, &color);
+  cairo_arc (cr, cx, cy, radius, -G_PI / 2,
+             -G_PI / 2 + 2 * G_PI * frac);
+  cairo_stroke (cr);
+}
+
+static void
+on_copy_totp (GtkButton *button, gpointer data)
+{
+  PassflEntryView *self = data;
+  OtpRow *r = g_object_get_data (G_OBJECT (button), "passfl-otp-row");
+  GError *error = NULL;
+  gint64 now = (gint64) (g_get_real_time () / G_USEC_PER_SEC);
+  g_autofree char *code = NULL;
+
+  if (r == NULL)
+    return;
+  code = passfl_otp_code (r->otp, now, &error);
+  if (code == NULL)
+    {
+      g_clear_error (&error);
+      return;
+    }
+  copy_timed (self, code); /* cleared like pass otp -c would */
+}
+
+static void
+on_hotp_generate (GtkButton *button, gpointer data)
+{
+  PassflEntryView *self = data;
+  PassflOtp *otp = g_object_get_data (G_OBJECT (button), "passfl-hotp");
+  guint line_idx = GPOINTER_TO_UINT (
+      g_object_get_data (G_OBJECT (button), "passfl-line"));
+  GError *error = NULL;
+  g_autofree char *code = NULL;
+  g_autofree char *bumped = NULL;
+
+  if (otp == NULL || self->entry == NULL)
+    return;
+  /* pass-otp: code at counter+1, then the entry is rewritten */
+  code = passfl_otp_hotp_code (otp, passfl_otp_counter (otp) + 1, &error);
+  if (code == NULL)
+    {
+      toast (self, "%s", error != NULL ? error->message : "HOTP failed");
+      g_clear_error (&error);
+      return;
+    }
+  copy_timed (self, code);
+
+  if (self->hotp_func == NULL)
+    return;
+  bumped = passfl_otp_incremented_uri (otp);
+  {
+    guint n = passfl_entry_n_lines (self->entry);
+    gsize total = 0;
+    PassflSecBuf *content;
+    char *p;
+
+    for (guint i = 0; i < n; i++)
+      total += strlen (i == line_idx
+                           ? bumped
+                           : passfl_entry_line (self->entry, i)) +
+               1;
+    if (!passfl_entry_final_newline (self->entry) && total > 0)
+      total--;
+    content = passfl_secbuf_new_sized (total);
+    p = content->data;
+    for (guint i = 0; i < n; i++)
+      {
+        const char *line = i == line_idx
+            ? bumped
+            : passfl_entry_line (self->entry, i);
+        gsize len = strlen (line);
+
+        memcpy (p, line, len);
+        p += len;
+        if (i + 1 < n || passfl_entry_final_newline (self->entry))
+          *p++ = '\n';
+      }
+    self->hotp_func (content, self->hotp_user_data);
+  }
+}
+
+static GtkWidget *
+otp_code_row (PassflEntryView *self, PassflOtp *otp /* takes */,
+              guint line_idx)
+{
+  GtkWidget *row = adw_action_row_new ();
+  GtkWidget *copy = flat_button ("edit-copy-symbolic",
+                                 "Copy code (cleared after the timer)");
+  const char *who = passfl_otp_display (otp);
+
+  adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
+  gtk_widget_add_css_class (row, "numeric");
+
+  if (passfl_otp_type (otp) == PASSFL_OTP_TOTP)
+    {
+      OtpRow *r = g_new0 (OtpRow, 1);
+      GtkWidget *ring = gtk_drawing_area_new ();
+
+      adw_preferences_row_set_title (
+          ADW_PREFERENCES_ROW (row),
+          who != NULL ? who : "One-time code");
+      r->otp = otp;
+      r->row = row;
+      r->ring = ring;
+      gtk_drawing_area_set_content_width (GTK_DRAWING_AREA (ring), 22);
+      gtk_drawing_area_set_content_height (GTK_DRAWING_AREA (ring), 22);
+      gtk_widget_set_valign (ring, GTK_ALIGN_CENTER);
+      gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (ring), draw_ring,
+                                      r, NULL);
+      g_object_set_data (G_OBJECT (copy), "passfl-otp-row", r);
+      g_signal_connect (copy, "clicked", G_CALLBACK (on_copy_totp), self);
+      adw_action_row_add_suffix (ADW_ACTION_ROW (row), ring);
+      adw_action_row_add_suffix (ADW_ACTION_ROW (row), copy);
+      g_ptr_array_add (self->otp_rows, r);
+      otp_row_update (r);
+    }
+  else
+    {
+      GtkWidget *gen = gtk_button_new_with_label ("Generate");
+      g_autofree char *sub = g_strdup_printf (
+          "HOTP, counter %" G_GUINT64_FORMAT, passfl_otp_counter (otp));
+
+      adw_preferences_row_set_title (
+          ADW_PREFERENCES_ROW (row),
+          who != NULL ? who : "One-time code");
+      adw_action_row_set_subtitle (ADW_ACTION_ROW (row), sub);
+      gtk_widget_add_css_class (gen, "flat");
+      gtk_widget_set_valign (gen, GTK_ALIGN_CENTER);
+      gtk_widget_set_tooltip_text (
+          gen, "Copy the next code and bump the counter, like pass otp");
+      g_object_set_data_full (G_OBJECT (gen), "passfl-hotp", otp,
+                              (GDestroyNotify) passfl_otp_free);
+      g_object_set_data (G_OBJECT (gen), "passfl-line",
+                         GUINT_TO_POINTER (line_idx));
+      g_signal_connect (gen, "clicked", G_CALLBACK (on_hotp_generate),
+                        self);
+      adw_action_row_add_suffix (ADW_ACTION_ROW (row), gen);
+      g_object_unref (g_object_ref_sink (copy)); /* unused for hotp */
+      copy = NULL;
+    }
+  return row;
+}
+
 /* --- row construction ---------------------------------------------------- */
 
 /* The secret lives on the row only through these data keys; line index
@@ -329,6 +548,8 @@ clear_groups (PassflEntryView *self)
 {
   GtkWidget *child;
 
+  g_clear_handle_id (&self->otp_timer_id, g_source_remove);
+  g_ptr_array_set_size (self->otp_rows, 0);
   while ((child = gtk_widget_get_first_child (self->groups_box)) != NULL)
     gtk_box_remove (GTK_BOX (self->groups_box), child);
 }
@@ -359,7 +580,13 @@ rebuild_groups (PassflEntryView *self, const char *name)
         continue;
 
       if (passfl_entry_line_is_otp (line))
-        row = secret_row (self, "OTP secret", i);
+        {
+          PassflOtp *otp = passfl_otp_parse (line, NULL);
+
+          /* live code row (§9); unparseable URIs stay a masked secret */
+          row = otp != NULL ? otp_code_row (self, otp, i)
+                            : secret_row (self, "OTP secret", i);
+        }
       else if (passfl_entry_line_kv (line, &key_len, &value))
         {
           g_autofree char *key = g_strndup (line, key_len);
@@ -420,6 +647,8 @@ passfl_entry_view_show_entry (PassflEntryView *self, const char *name,
   g_clear_pointer (&self->entry, passfl_entry_free);
   self->entry = entry;
   rebuild_groups (self, name);
+  if (self->otp_rows->len > 0)
+    self->otp_timer_id = g_timeout_add_seconds (1, otp_tick, self);
   gtk_stack_set_visible_child_name (self->stack, "entry");
 }
 
@@ -443,6 +672,16 @@ passfl_entry_view_set_toast_overlay (PassflEntryView *self,
   self->toasts = toasts;
 }
 
+void
+passfl_entry_view_set_hotp_handler (PassflEntryView *self,
+                                    PassflEntryViewHotpFunc func,
+                                    gpointer user_data)
+{
+  g_return_if_fail (PASSFL_IS_ENTRY_VIEW (self));
+  self->hotp_func = func;
+  self->hotp_user_data = user_data;
+}
+
 /* --- boilerplate ---------------------------------------------------------- */
 
 static void
@@ -455,6 +694,8 @@ passfl_entry_view_dispose (GObject *obj)
    * Wayland our offer dies with the process anyway). */
   clip_disarm (self, TRUE);
   self->toasts = NULL;
+  g_clear_handle_id (&self->otp_timer_id, g_source_remove);
+  g_clear_pointer (&self->otp_rows, g_ptr_array_unref);
   g_clear_pointer (&self->entry, passfl_entry_free);
   G_OBJECT_CLASS (passfl_entry_view_parent_class)->dispose (obj);
 }
@@ -480,6 +721,7 @@ passfl_entry_view_init (PassflEntryView *self)
   self->status = ADW_STATUS_PAGE (adw_status_page_new ());
   gtk_stack_add_named (self->stack, GTK_WIDGET (self->status), "status");
 
+  self->otp_rows = g_ptr_array_new_with_free_func (otp_row_free);
   self->groups_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 18);
   gtk_widget_set_margin_top (self->groups_box, 18);
   gtk_widget_set_margin_bottom (self->groups_box, 18);

@@ -12,13 +12,14 @@ store — the same directory of GPG-encrypted files, read and written in place.
 `pass` on the command line and this app can be used on one store
 interchangeably; neither needs to know about the other.
 
-> **Status:** M4 — the full operation set. mv/cp with selective
-> re-encryption (§4.10 as a diff over PKESK key IDs, gpg groups included),
-> init/deinit with signed `.gpg-id`, a recipient view with the
-> "needs re-encryption" warning and one-click fix; git commits with
-> `pass`-compatible messages on everything, per-entry history with
-> plaintext diffs and restore. Conformance-tested against `pass` 1.7.4
-> throughout. Remaining: TOTP (M5) and packaging (M6).
+> **Status:** M5 — feature-complete against the spec. TOTP codes are
+> computed natively (libgcrypt HMAC in secure memory, RFC 6238-verified)
+> and shown live with a countdown ring; HOTP generates like `pass otp`,
+> counter bump and commit message included. Everything below M5 holds:
+> the full operation set with selective re-encryption, git with
+> `pass`-compatible messages, history with plaintext diffs, recipient
+> view. Conformance-tested against `pass` 1.7.4 and pass-otp 1.2.0.
+> Remaining: packaging (M6).
 > Read [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Why

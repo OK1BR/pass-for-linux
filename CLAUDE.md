@@ -14,16 +14,15 @@ Scope/design: `docs/SPEC.md` (written 2026-07-28 — **read it first**; it is a
 specification of `pass` behaviour derived from the script itself, with line
 references, plus the decided architecture and milestones).
 
-**Status: M4 done** — mv/cp with the §4.10 re-encryption diff (native
-PKESK key ID reads, gpg group expansion from gpg.conf, rewrite only on
-key-set mismatch), init/deinit with PASSWORD_STORE_SIGNING_KEY signing
-and byte-exact messages (including deinit's absolute path and the
-empty-id double space), needs-reencrypt query; UI banner warning +
-recipients dialog with one-click subtree re-encrypt, rename/duplicate.
-All earlier milestones hold; 8/8 gates green (`m4_test.c` is the
-mv/cp/init rig vs real pass). PASSWORD_STORE_GPG_OPTS still refused on
-writes. Next: M5 (TOTP: otpauth:// parsing, native HMAC codes,
-countdown UI) then M6 (packaging: PKGBUILD, metainfo, icon, .desktop).
+**Status: M5 done** — `otp.c` parses otpauth:// like pass-otp's
+otp_parse_uri, computes codes natively (base32 + libgcrypt HMAC with
+GCRY_MD_FLAG_SECURE; RFC 4226/6238 vector-verified; live conformance
+vs `pass otp`), UI shows live TOTP with a countdown ring and timed
+copy; HOTP generates at counter+1, rewrites the entry and commits
+"Increment HOTP counter for <path>." exactly like pass-otp. All
+earlier milestones hold; 9/9 gates green. PASSWORD_STORE_GPG_OPTS
+still refused on writes. Next: M6 — packaging (PKGBUILD, appstream
+metainfo, icon, .desktop, conformance suite in CI).
 
 ## Four rules that override convenience
 

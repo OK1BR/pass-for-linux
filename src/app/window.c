@@ -1023,6 +1023,36 @@ on_store_changed (gpointer data)
   rebuild_sidebar (self);
 }
 
+/* HOTP generated a code — write the counter-bumped entry back with
+ * pass-otp's message (otp.bash line 367). */
+static void
+on_hotp_rewritten (PassflSecBuf *content, gpointer data)
+{
+  PassflWindow *self = data;
+  GError *error = NULL;
+
+  if (self->current_rel == NULL)
+    {
+      passfl_secbuf_free (content);
+      return;
+    }
+  if (!passfl_store_write_entry (self->store_dir, self->current_rel,
+                                 content->data, content->len, &error))
+    {
+      toast (self, "%s", error->message);
+      g_error_free (error);
+    }
+  else
+    {
+      g_autofree char *message = g_strdup_printf (
+          "Increment HOTP counter for %s.", self->current_rel);
+
+      vcs_commit (self, self->current_rel, message);
+      open_entry (self, self->current_rel); /* show the new counter */
+    }
+  passfl_secbuf_free (content);
+}
+
 /* --- actions ----------------------------------------------------------------- */
 
 static void
@@ -1283,6 +1313,8 @@ passfl_window_init (PassflWindow *self)
   adw_application_window_set_content (ADW_APPLICATION_WINDOW (self),
                                       GTK_WIDGET (self->toasts));
   passfl_entry_view_set_toast_overlay (self->entry_view, self->toasts);
+  passfl_entry_view_set_hotp_handler (self->entry_view, on_hotp_rewritten,
+                                      self);
 
   GtkEventController *keys = gtk_event_controller_key_new ();
   gtk_event_controller_set_propagation_phase (keys, GTK_PHASE_CAPTURE);
