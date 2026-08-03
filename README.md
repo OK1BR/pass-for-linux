@@ -45,3 +45,7 @@ libraries, all already packaged.
 ## Licence
 
 GPL-3.0-or-later. Richard Fakenberg, OK1BR.
+
+## Author
+
+Richard Fakenberg — **OK1BR** — [rifak.cz](https://rifak.cz)
