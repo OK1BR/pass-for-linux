@@ -371,6 +371,30 @@ What a GUI can add over the CLI without breaking §1:
   with a warning when the resolved key set differs from what the files actually
   carry (§4.10 step 4/5 — this is the state `pass init` would fix).
 
+- **A GNOME-correct About dialog — finish it.** TO DO, written down
+  2026-08-04 at Richard's request across every app of the family: each of his
+  apps must open the same kind of About from its primary menu, and its
+  strings must agree with what the `.desktop` entry and the AppStream
+  metainfo say — one truth about the app, not three. The contract, in
+  `AdwAboutDialog` terms (`adw_about_dialog_new`, NOT the deprecated
+  `AdwAboutWindow`): `application_icon` = the GApplication id, which is also
+  the installed icon's file name — get that wrong and the dialog shows a
+  generic gear; `application_name`; `version` from the meson project
+  version; `developer_name` "Richard Fakenberg, OK1BR"; `copyright`;
+  `license_type` `GTK_LICENSE_GPL_3_0`; `comments` — the same one-liner the
+  metainfo carries; `website` + `issue_url`; `debug_info` with versions and
+  paths for a pasteable bug report. Menu item last in the primary menu, per
+  the GNOME HIG.
+  **Where this project stands:** the dialog exists (`act_about` in
+  `src/app/window.c`, wired to `win.about`, last in the menu) with name,
+  version, developer, licence, website and `debug_info` — missing
+  `application_icon`, `issue_url`, `copyright` and `comments`. The icon is
+  the blocked one: this repo has no `data/` at all, so there is no installed
+  icon, `.desktop` entry or metainfo to point at. That lands with **M6
+  (packaging, postponed)** — see `sdr-for-linux`'s `data/` +
+  `gnome.post_install` for the shape, and its About (`src/gui.c`) for the
+  full field set.
+
 Explicitly **not** in v1: browser integration, import/export from other managers,
 multi-store switching, SSH agent.
 
