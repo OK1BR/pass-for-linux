@@ -385,6 +385,11 @@ What a GUI can add over the CLI without breaking §1:
   metainfo carries; `website` + `issue_url`; `debug_info` with versions and
   paths for a pasteable bug report. Menu item last in the primary menu, per
   the GNOME HIG.
+  **The version must be findable FROM THE UI** (Richard, 2026-08-04): a
+  `--version` flag on the command line does NOT satisfy this. Someone who
+  launched the app from the app grid must be able to see which version he is
+  running without leaving it — the About dialog is that place. A CLI flag is
+  welcome on top, never instead.
   **Where this project stands:** the dialog exists (`act_about` in
   `src/app/window.c`, wired to `win.about`, last in the menu) with name,
   version, developer, licence, website and `debug_info` — missing
