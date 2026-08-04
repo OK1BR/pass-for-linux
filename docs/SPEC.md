@@ -395,6 +395,15 @@ What a GUI can add over the CLI without breaking §1:
   `gnome.post_install` for the shape, and its About (`src/gui.c`) for the
   full field set.
 
+- **The Website field in the repo header.** TO DO, written down 2026-08-04 at
+  Richard's request across every one of his projects: every OK1BR repo has
+  that field empty while its README already points at
+  [rifak.cz](https://rifak.cz) — so the GitHub sidebar, which is the first
+  place a visitor looks, links nowhere. Repo metadata, not code:
+  `gh repo edit OK1BR/pass-for-linux --homepage https://rifak.cz` (or the web
+  UI). Whoever next works this project sets it; the same note is in the scope
+  of every sibling.
+
 Explicitly **not** in v1: browser integration, import/export from other managers,
 multi-store switching, SSH agent.
 
