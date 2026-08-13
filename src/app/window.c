@@ -1122,8 +1122,10 @@ act_about (GSimpleAction *action, GVariant *param, gpointer data)
   (void) param;
   adw_about_dialog_set_application_name (ADW_ABOUT_DIALOG (dlg),
                                          "Pass for Linux");
-  /* application_icon stays unset until M6 ships an installed icon —
-   * data/, .desktop and metainfo land together (SPEC §9). */
+  /* Resolves against the installed hicolor icon (data/meson.build);
+   * the .desktop + metainfo rest of desktop integration is M6. */
+  adw_about_dialog_set_application_icon (ADW_ABOUT_DIALOG (dlg),
+                                         "cz.ok1br.pass_for_linux");
   adw_about_dialog_set_version (ADW_ABOUT_DIALOG (dlg), PASSFL_VERSION);
   adw_about_dialog_set_developer_name (ADW_ABOUT_DIALOG (dlg),
                                        "Richard Fakenberg, OK1BR");

@@ -9,6 +9,8 @@ project('pass-for-linux', 'c',
 )
 
 add_project_arguments('-D_GNU_SOURCE', language : 'c')
+
+gnome = import('gnome')  # data/: post-install icon cache refresh
 add_project_arguments('-DPASSFL_VERSION="@0@"'.format(meson.project_version()),
                       language : 'c')
 
@@ -154,3 +156,5 @@ executable('pass-for-linux',
   link_with : engine_lib,
   install : true,
 )
+
+subdir('data')   # icon install (the .desktop + metainfo rest is M6)
