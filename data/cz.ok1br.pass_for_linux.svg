@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Pass for Linux application icon: the store's entry tree behind a
+       cyan padlock carrying password dots — same plate and palette as the
+       sdr-for-linux, skimmer-for-linux and log-for-linux icons. -->
+  <defs>
+    <clipPath id="plate">
+      <rect x="8" y="8" width="112" height="112" rx="26"/>
+    </clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#232833"/>
+      <stop offset="1" stop-color="#0c0e13"/>
+    </linearGradient>
+    <linearGradient id="lockbody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bdf0ff"/>
+      <stop offset="1" stop-color="#2f9fd8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <g clip-path="url(#plate)">
+    <rect x="8" y="8" width="112" height="112" fill="url(#bg)"/>
+
+    <!-- faint row separators -->
+    <g stroke="#ffffff" stroke-opacity="0.05" stroke-width="1">
+      <path d="M8 38h112M8 60h112M8 82h112M8 104h112"/>
+    </g>
+
+    <!-- the store tree: folder row, then indented entries, fading out -->
+    <g fill="#ffffff">
+      <g opacity="0.50">
+        <rect x="20" y="24" width="9" height="9" rx="2.5" opacity="0.6"/>
+        <rect x="35" y="25" width="34" height="8" rx="4"/>
+      </g>
+      <g opacity="0.38">
+        <rect x="30" y="46" width="9" height="9" rx="4.5" opacity="0.6"/>
+        <rect x="45" y="47" width="28" height="8" rx="4"/>
+      </g>
+      <g opacity="0.26">
+        <rect x="30" y="68" width="9" height="9" rx="4.5" opacity="0.6"/>
+        <rect x="45" y="69" width="38" height="8" rx="4"/>
+      </g>
+      <g opacity="0.16">
+        <rect x="30" y="90" width="9" height="9" rx="4.5" opacity="0.6"/>
+        <rect x="45" y="91" width="24" height="8" rx="4"/>
+      </g>
+    </g>
+
+    <!-- padlock: shackle + cyan body with password dots -->
+    <path d="M69 66 v-14 a17 17 0 0 1 34 0 v14"
+          fill="none" stroke="#7fe3ff" stroke-width="9" stroke-linecap="round"/>
+    <rect x="58" y="64" width="56" height="44" rx="10" fill="url(#lockbody)"/>
+    <g fill="#0c2434">
+      <circle cx="74" cy="86" r="5"/>
+      <circle cx="86" cy="86" r="5"/>
+      <circle cx="98" cy="86" r="5"/>
+    </g>
+
+    <!-- top gloss -->
+    <rect x="8" y="8" width="112" height="40" fill="url(#gloss)"/>
+  </g>
+
+  <!-- plate edge -->
+  <rect x="8.5" y="8.5" width="111" height="111" rx="25.5" fill="none"
+        stroke="#ffffff" stroke-opacity="0.08"/>
+</svg>
