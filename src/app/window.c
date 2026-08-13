@@ -1104,19 +1104,40 @@ act_about (GSimpleAction *action, GVariant *param, gpointer data)
 {
   PassflWindow *self = data;
   AdwDialog *dlg = adw_about_dialog_new ();
-  g_autofree char *dbg = g_strdup_printf ("Store: %s", self->store_dir);
+  const char *renderer = g_getenv ("GSK_RENDERER");
+  /* Runtime (not compile-time) library versions — see sdr-for-linux. */
+  g_autofree char *dbg = g_strdup_printf (
+      "Pass for Linux %s\n"
+      "GTK %u.%u.%u, libadwaita %u.%u.%u, GSK_RENDERER=%s\n"
+      "Store: %s",
+      PASSFL_VERSION,
+      gtk_get_major_version (), gtk_get_minor_version (),
+      gtk_get_micro_version (),
+      adw_get_major_version (), adw_get_minor_version (),
+      adw_get_micro_version (),
+      renderer ? renderer : "default",
+      self->store_dir);
 
   (void) action;
   (void) param;
   adw_about_dialog_set_application_name (ADW_ABOUT_DIALOG (dlg),
                                          "Pass for Linux");
+  /* application_icon stays unset until M6 ships an installed icon —
+   * data/, .desktop and metainfo land together (SPEC §9). */
   adw_about_dialog_set_version (ADW_ABOUT_DIALOG (dlg), PASSFL_VERSION);
   adw_about_dialog_set_developer_name (ADW_ABOUT_DIALOG (dlg),
                                        "Richard Fakenberg, OK1BR");
+  adw_about_dialog_set_comments (ADW_ABOUT_DIALOG (dlg),
+      "A native GTK4/libadwaita front-end for the pass password store — "
+      "the same GPG-encrypted files, read and written in place.");
+  adw_about_dialog_set_copyright (ADW_ABOUT_DIALOG (dlg),
+                                  "© 2026 Richard Fakenberg, OK1BR");
   adw_about_dialog_set_license_type (ADW_ABOUT_DIALOG (dlg),
                                      GTK_LICENSE_GPL_3_0);
   adw_about_dialog_set_website (ADW_ABOUT_DIALOG (dlg),
                                 "https://github.com/OK1BR/pass-for-linux");
+  adw_about_dialog_set_issue_url (ADW_ABOUT_DIALOG (dlg),
+                                  "https://github.com/OK1BR/pass-for-linux/issues");
   adw_about_dialog_set_debug_info (ADW_ABOUT_DIALOG (dlg), dbg);
   adw_dialog_present (dlg, GTK_WIDGET (self));
 }
