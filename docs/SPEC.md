@@ -394,15 +394,14 @@ What a GUI can add over the CLI without breaking §1:
   `src/app/window.c`, wired to `win.about`, last in the menu) carries name,
   version, developer, licence, website, `issue_url`, `copyright`, `comments`
   and a `debug_info` with runtime GTK/libadwaita versions and the store
-  path. The one field still missing is `application_icon`. The icon itself
-  is drawn and approved (2026-08-13): `data/cz.ok1br.pass_for_linux.svg`,
-  the family plate with the store's entry tree behind a cyan padlock
-  carrying password dots. What is still M6's (packaging, postponed) is
-  everything around it: the install rule, `.desktop` entry, metainfo and
-  the `application_icon` line in `act_about` — an icon name only resolves
-  once the file is installed into the hicolor theme. See `sdr-for-linux`'s
-  `data/` + `gnome.post_install` for the shape. The `comments` one-liner
-  in `act_about` becomes the metainfo summary then — one truth, not three.
+  path. `application_icon` is set too (2026-08-13): the icon —
+  `data/cz.ok1br.pass_for_linux.svg`, the family plate with the store's
+  entry tree behind a cyan padlock carrying password dots — is drawn,
+  approved and installed into the hicolor theme by `data/meson.build`,
+  the one slice of M6 pulled forward so the dialog shows it. Still M6's
+  (packaging, postponed): the `.desktop` entry, AppStream metainfo,
+  PKGBUILD and CI. The `comments` one-liner in `act_about` becomes the
+  metainfo summary then — one truth, not three.
 
 - **The Website field in the repo header.** Written down 2026-08-04 at
   Richard's request across every one of his projects: every OK1BR repo had
