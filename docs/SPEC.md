@@ -390,24 +390,27 @@ What a GUI can add over the CLI without breaking §1:
   launched the app from the app grid must be able to see which version he is
   running without leaving it — the About dialog is that place. A CLI flag is
   welcome on top, never instead.
-  **Where this project stands:** the dialog exists (`act_about` in
-  `src/app/window.c`, wired to `win.about`, last in the menu) with name,
-  version, developer, licence, website and `debug_info` — missing
-  `application_icon`, `issue_url`, `copyright` and `comments`. The icon is
-  the blocked one: this repo has no `data/` at all, so there is no installed
-  icon, `.desktop` entry or metainfo to point at. That lands with **M6
-  (packaging, postponed)** — see `sdr-for-linux`'s `data/` +
-  `gnome.post_install` for the shape, and its About (`src/gui.c`) for the
-  full field set.
+  **Where this project stands (2026-08-13):** the dialog (`act_about` in
+  `src/app/window.c`, wired to `win.about`, last in the menu) carries name,
+  version, developer, licence, website, `issue_url`, `copyright`, `comments`
+  and a `debug_info` with runtime GTK/libadwaita versions and the store
+  path. The one field still missing is `application_icon`. The icon itself
+  is drawn and approved (2026-08-13): `data/cz.ok1br.pass_for_linux.svg`,
+  the family plate with the store's entry tree behind a cyan padlock
+  carrying password dots. What is still M6's (packaging, postponed) is
+  everything around it: the install rule, `.desktop` entry, metainfo and
+  the `application_icon` line in `act_about` — an icon name only resolves
+  once the file is installed into the hicolor theme. See `sdr-for-linux`'s
+  `data/` + `gnome.post_install` for the shape. The `comments` one-liner
+  in `act_about` becomes the metainfo summary then — one truth, not three.
 
-- **The Website field in the repo header.** TO DO, written down 2026-08-04 at
-  Richard's request across every one of his projects: every OK1BR repo has
+- **The Website field in the repo header.** Written down 2026-08-04 at
+  Richard's request across every one of his projects: every OK1BR repo had
   that field empty while its README already points at
   [rifak.cz](https://rifak.cz) — so the GitHub sidebar, which is the first
-  place a visitor looks, links nowhere. Repo metadata, not code:
-  `gh repo edit OK1BR/pass-for-linux --homepage https://rifak.cz` (or the web
-  UI). Whoever next works this project sets it; the same note is in the scope
-  of every sibling.
+  place a visitor looks, linked nowhere. **Done for this repo 2026-08-13**
+  (`gh repo edit OK1BR/pass-for-linux --homepage https://rifak.cz`); the
+  same note is in the scope of every sibling.
 
 Explicitly **not** in v1: browser integration, import/export from other managers,
 multi-store switching, SSH agent.
