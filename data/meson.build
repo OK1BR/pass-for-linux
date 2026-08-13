@@ -7,6 +7,9 @@
 install_data('cz.ok1br.pass_for_linux.svg',
   install_dir : get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps',
   install_tag : 'data')  # so `meson install --tags data` = icon without binary
+install_data('cz.ok1br.pass_for_linux-symbolic.svg',
+  install_dir : get_option('datadir') / 'icons' / 'hicolor' / 'symbolic' / 'apps',
+  install_tag : 'data')
 
 # The sibling installs left an icon-theme.cache in ~/.local/share/icons/
 # hicolor; a cache that predates our icon would hide it, so refresh it at
